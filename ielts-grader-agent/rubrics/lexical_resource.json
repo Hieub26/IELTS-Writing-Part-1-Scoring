@@ -1,0 +1,110 @@
+{
+  "9": {
+    "description": "uses a wide range of vocabulary with very natural and sophisticated control of lexical features; rare minor errors occur only as 'slips'",
+    "heuristics": {
+      "min_ttr": 0.65,
+      "min_academic_word_density": 0.10,
+      "max_spelling_errors": 1,
+      "max_trend_word_repetition": 4,
+      "min_unique_trend_phrases": 6
+    }
+  },
+  "8": {
+    "description": "uses a wide range of vocabulary fluently and flexibly to convey precise meanings; skilfully uses uncommon lexical items but there may be occasional inaccuracies in word choice and collocation; produces rare errors in spelling and/or word formation",
+    "heuristics": {
+      "min_ttr": 0.55,
+      "min_academic_word_density": 0.08,
+      "max_spelling_errors": 2,
+      "max_trend_word_repetition": 5,
+      "min_unique_trend_phrases": 5
+    }
+  },
+  "7": {
+    "description": "uses a sufficient range of vocabulary to allow some flexibility and precision; uses less common lexical items with some awareness of style and collocation; may produce occasional errors in word choice, spelling and/or word formation",
+    "heuristics": {
+      "min_ttr": 0.48,
+      "min_academic_word_density": 0.05,
+      "max_spelling_errors": 3,
+      "max_trend_word_repetition": 6,
+      "min_unique_trend_phrases": 4
+    }
+  },
+  "6": {
+    "description": "uses an adequate range of vocabulary for the task; attempts to use less common vocabulary but with some inaccuracy; makes some errors in spelling and/or word formation, but they do not impede communication",
+    "heuristics": {
+      "min_ttr": 0.40,
+      "min_academic_word_density": 0.03,
+      "max_spelling_errors": 5,
+      "max_trend_word_repetition": 8,
+      "min_unique_trend_phrases": 3
+    }
+  },
+  "5": {
+    "description": "uses a limited vocabulary, but this is minimally adequate for the task; may make noticeable errors in spelling and/or word formation that may cause some difficulty for the reader",
+    "heuristics": {
+      "min_ttr": 0.35,
+      "min_academic_word_density": 0.01,
+      "max_spelling_errors": 8,
+      "max_trend_word_repetition": 10,
+      "min_unique_trend_phrases": 2
+    }
+  },
+  "4": {
+    "description": "uses only basic vocabulary which may be used repetitively or which may be inappropriate for the task; has limited control of word formation and/or spelling; errors may cause strain for the reader",
+    "heuristics": {
+      "min_ttr": 0.30,
+      "min_academic_word_density": 0.01,
+      "max_spelling_errors": 12,
+      "max_trend_word_repetition": 12,
+      "min_unique_trend_phrases": 1
+    }
+  },
+  "3": {
+    "description": "uses only a very limited range of words and expressions with very limited control of word formation and/or spelling; errors may severely distort the message",
+    "heuristics": {
+      "min_ttr": 0.25,
+      "min_academic_word_density": 0.0,
+      "max_spelling_errors": 18,
+      "max_trend_word_repetition": 15,
+      "min_unique_trend_phrases": 0
+    }
+  },
+  "2": {
+    "description": "uses an extremely limited range of vocabulary; essentially no control of word formation and/or spelling",
+    "heuristics": {
+      "min_ttr": 0.20,
+      "min_academic_word_density": 0.0,
+      "max_spelling_errors": 25,
+      "max_trend_word_repetition": 20,
+      "min_unique_trend_phrases": 0
+    }
+  },
+  "1": {
+    "description": "can only use a few isolated words",
+    "heuristics": {
+      "min_ttr": 0.0,
+      "min_academic_word_density": 0.0,
+      "max_spelling_errors": 50,
+      "max_trend_word_repetition": 50,
+      "min_unique_trend_phrases": 0
+    }
+  },
+  "0": {
+    "description": "does not attend; does not attempt the task in any way",
+    "heuristics": {
+      "min_ttr": 0.0,
+      "min_academic_word_density": 0.0,
+      "max_spelling_errors": 0,
+      "max_trend_word_repetition": 0,
+      "min_unique_trend_phrases": 0
+    }
+  },
+  "trend_vocabulary_groups": {
+    "increase": ["increase", "rise", "grow", "climb", "soar", "surge", "rocket", "jump", "escalate", "go up", "went up", "shot up", "skyrocket"],
+    "decrease": ["decrease", "decline", "fall", "drop", "plummet", "plunge", "dip", "shrink", "reduce", "go down", "went down", "slump"],
+    "stable": ["remain", "stay", "stabilize", "level off", "plateau", "hold steady", "maintain", "unchanged", "constant", "flat"],
+    "fluctuate": ["fluctuate", "vary", "oscillate", "waver", "be erratic", "be volatile"],
+    "peak": ["peak", "reach a high", "reach its highest", "hit a maximum", "culminate"],
+    "trough": ["bottom out", "reach a low", "reach its lowest", "hit a minimum", "dip to"]
+  }
+}

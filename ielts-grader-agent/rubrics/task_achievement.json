@@ -1,0 +1,92 @@
+{
+  "9": {
+    "description": "fully satisfies all the requirements of the task; clearly presents a fully developed response",
+    "heuristics": {
+      "min_coverage_rate": 0.95,
+      "max_contradiction_rate": 0.0,
+      "requires_overview": true,
+      "word_count_threshold": 150
+    }
+  },
+  "8": {
+    "description": "covers all requirements of the task sufficiently; presents, highlights and illustrates key features/bullet points clearly and appropriately",
+    "heuristics": {
+      "min_coverage_rate": 0.85,
+      "max_contradiction_rate": 0.02,
+      "requires_overview": true,
+      "word_count_threshold": 150
+    }
+  },
+  "7": {
+    "description": "covers the requirements of the task; presents a clear overview of main trends, differences or stages; clearly presents and highlights key features/bullet points but could be more fully extended",
+    "heuristics": {
+      "min_coverage_rate": 0.75,
+      "max_contradiction_rate": 0.05,
+      "requires_overview": true,
+      "word_count_threshold": 150
+    }
+  },
+  "6": {
+    "description": "addresses the requirements of the task; presents an overview with information appropriately selected; presents and adequately highlights key features/bullet points but details may be irrelevant, inappropriate or inaccurate",
+    "heuristics": {
+      "min_coverage_rate": 0.60,
+      "max_contradiction_rate": 0.10,
+      "requires_overview": true,
+      "word_count_threshold": 150
+    }
+  },
+  "5": {
+    "description": "generally addresses the task; the format may be inappropriate in places; recounts detail mechanically with no clear overview; there may be no data to support the description; may present a purpose for the letter that is unclear at times; the tone may be variable and sometimes inappropriate; presents, but inadequately covers, key features/bullet points; there may be a tendency to focus on details",
+    "heuristics": {
+      "min_coverage_rate": 0.45,
+      "max_contradiction_rate": 0.15,
+      "requires_overview": false,
+      "word_count_threshold": 150
+    }
+  },
+  "4": {
+    "description": "attempts to address the task but does not cover all key features/bullet points; the format may be inappropriate; may confuse key features/bullet points with detail; parts may be unclear, irrelevant, repetitive or inaccurate",
+    "heuristics": {
+      "min_coverage_rate": 0.30,
+      "max_contradiction_rate": 0.25,
+      "requires_overview": false,
+      "word_count_threshold": 150
+    }
+  },
+  "3": {
+    "description": "fails to address the task, which may have been completely misunderstood; presents limited ideas which may be largely irrelevant/repetitive",
+    "heuristics": {
+      "min_coverage_rate": 0.15,
+      "max_contradiction_rate": 0.40,
+      "requires_overview": false,
+      "word_count_threshold": 150
+    }
+  },
+  "2": {
+    "description": "answer is barely related to the task",
+    "heuristics": {
+      "min_coverage_rate": 0.05,
+      "max_contradiction_rate": 0.60,
+      "requires_overview": false,
+      "word_count_threshold": 150
+    }
+  },
+  "1": {
+    "description": "answer is completely unrelated to the task; does not attempt the task in any way; writes a totally memorised response",
+    "heuristics": {
+      "min_coverage_rate": 0.0,
+      "max_contradiction_rate": 1.0,
+      "requires_overview": false,
+      "word_count_threshold": 150
+    }
+  },
+  "0": {
+    "description": "does not attend; does not attempt the task in any way; writes a totally memorised response",
+    "heuristics": {
+      "min_coverage_rate": 0.0,
+      "max_contradiction_rate": 1.0,
+      "requires_overview": false,
+      "word_count_threshold": 150
+    }
+  }
+}

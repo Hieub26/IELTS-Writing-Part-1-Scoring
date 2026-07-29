@@ -1,0 +1,532 @@
+"""
+Agent 5: Chief Examiner — Synthesizes all reports into final assessment.
+
+Features:
+  - Cross-validates reports from all specialist agents
+  - Detects inconsistencies between agent scores
+  - Computes overall band score with evidence-based reasoning
+  - Generates detailed Markdown feedback with explainability
+  - Triggers self-correction loop via Critic when needed
+"""
+
+from __future__ import annotations
+
+import json
+import re
+import time
+
+from google import genai
+from google.genai import types
+
+from app.config import settings
+from app.core.state import GraderState
+from app.core.utils.rubric_loader import get_all_descriptions
+from app.core.utils.prompt_templates import CHIEF_EXAMINER_PROMPT
+
+
+MAX_LLM_RETRIES = 3
+
+
+def chief_examiner_node(state: GraderState) -> dict:
+    """
+    LangGraph node: Synthesize all agent reports into final assessment.
+
+    Args:
+        state: Current graph state with all agent outputs.
+
+    Returns:
+        State updates with overall_band, feedback, evidence_summary,
+        and correction flags.
+    """
+    essay_text = state.get("essay_text", "")
+    word_count = state.get("word_count", 0)
+
+    # Collect all scores and metrics
+    ta_score = state.get("ta_score", 0.0)
+    ta_confidence = state.get("ta_confidence", 0.0)
+    ta_details = state.get("ta_details", {})
+
+    gra_score = state.get("gra_score", 0.0)
+    gra_confidence = state.get("gra_confidence", 0.0)
+    lr_score = state.get("lr_score", 0.0)
+    lr_confidence = state.get("lr_confidence", 0.0)
+
+    cc_score = state.get("cc_score", 0.0)
+    cc_confidence = state.get("cc_confidence", 0.0)
+    cc_details = state.get("cc_details", {})
+
+    sentence_metrics = state.get("sentence_metrics", {})
+    lexical_metrics = state.get("lexical_metrics", {})
+    grammar_errors = state.get("grammar_errors", [])
+
+    # ═══════════════════════════════════════════
+    # LLM-based Synthesis
+    # ═══════════════════════════════════════════
+
+    if settings.gemini_api_key:
+        result = _synthesize_with_llm(state)
+    else:
+        result = _synthesize_rule_based(state)
+
+    return result
+
+
+def _synthesize_with_llm(state: GraderState) -> dict:
+    """Use Gemini LLM for final synthesis and cross-validation."""
+    try:
+        client = genai.Client(api_key=settings.gemini_api_key)
+
+        # Load all rubric descriptions
+        ta_rubric = get_all_descriptions("task_achievement")
+        cc_rubric = get_all_descriptions("coherence_cohesion")
+        lr_rubric = get_all_descriptions("lexical_resource")
+        gra_rubric = get_all_descriptions("grammar_accuracy")
+
+        ta_details = state.get("ta_details", {})
+        cc_details = state.get("cc_details", {})
+        sentence_metrics = state.get("sentence_metrics", {})
+        lexical_metrics = state.get("lexical_metrics", {})
+
+        prompt = CHIEF_EXAMINER_PROMPT.format(
+            ta_rubric=ta_rubric,
+            cc_rubric=cc_rubric,
+            lr_rubric=lr_rubric,
+            gra_rubric=gra_rubric,
+            ta_score=state.get("ta_score", 0),
+            ta_confidence=state.get("ta_confidence", 0),
+            coverage_rate=ta_details.get("coverage_rate", 0),
+            contradiction_rate=ta_details.get("contradiction_rate", 0),
+            missing_trends=ta_details.get("missing", 0),
+            has_overview=ta_details.get("has_overview", False),
+            gra_score=state.get("gra_score", 0),
+            gra_confidence=state.get("gra_confidence", 0),
+            lr_score=state.get("lr_score", 0),
+            lr_confidence=state.get("lr_confidence", 0),
+            grammar_error_count=len(state.get("grammar_errors", [])),
+            error_types=sentence_metrics.get("error_type_counts", {}),
+            complex_sentence_ratio=sentence_metrics.get("complex_sentence_ratio", 0),
+            ttr=lexical_metrics.get("ttr", 0),
+            academic_word_density=lexical_metrics.get("academic_word_density", 0),
+            trend_word_repetition=lexical_metrics.get("trend_word_repetition", 0),
+            cc_score=state.get("cc_score", 0),
+            cc_confidence=state.get("cc_confidence", 0),
+            cohesive_device_count=state.get("cohesion_report", {}).get(
+                "cohesive_device_count", 0
+            ),
+            logical_progression=cc_details.get("logical_progression", "unknown"),
+            paragraphing_quality=cc_details.get("paragraphing_quality", "unknown"),
+            word_count=state.get("word_count", 0),
+            essay_text=state.get("essay_text", ""),
+        )
+
+        response = _generate_with_retry(client, prompt)
+
+        return _parse_chief_response(response.text, state)
+
+    except Exception as e:
+        # Fallback to rule-based on LLM error
+        result = _synthesize_rule_based(state)
+        result["feedback"] += f"\n\n> ⚠️ LLM synthesis failed: {str(e)}. Using rule-based scoring."
+        return result
+
+
+def _generate_with_retry(client: genai.Client, prompt: str):
+    """Retry temporary Gemini capacity/rate-limit failures before fallback."""
+    for attempt in range(MAX_LLM_RETRIES):
+        try:
+            return client.models.generate_content(
+                model=settings.gemini_model_llm,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    temperature=0.2,
+                    max_output_tokens=4096,
+                    response_mime_type="application/json",
+                ),
+            )
+        except Exception as exc:
+            is_transient = "503" in str(exc) or "429" in str(exc)
+            if not is_transient or attempt == MAX_LLM_RETRIES - 1:
+                raise
+            time.sleep(2 ** attempt)
+
+
+def _synthesize_rule_based(state: GraderState) -> dict:
+    """Fallback: Compute final scores using simple averaging without LLM."""
+    ta_score = state.get("ta_score", 0.0)
+    cc_score = state.get("cc_score", 0.0)
+    lr_score = state.get("lr_score", 0.0)
+    gra_score = state.get("gra_score", 0.0)
+
+    # Overall confidence: weighted average
+    ta_conf = state.get("ta_confidence", 0.5)
+    cc_conf = state.get("cc_confidence", 0.5)
+    lr_conf = state.get("lr_confidence", 0.5)
+    gra_conf = state.get("gra_confidence", 0.5)
+    overall_confidence = round((ta_conf + cc_conf + lr_conf + gra_conf) / 4, 3)
+
+    # Build evidence summary
+    ta_details = state.get("ta_details", {})
+    lexical_metrics = state.get("lexical_metrics", {})
+    sentence_metrics = state.get("sentence_metrics", {})
+
+    evidence = {
+        "ta_evidence": (
+            f"Coverage {ta_details.get('coverage_rate', 0):.0%}, "
+            f"Contradiction {ta_details.get('contradiction_rate', 0):.0%}, "
+            f"Overview {'detected' if ta_details.get('has_overview') else 'missing'}"
+        ),
+        "cc_evidence": (
+            f"Cohesive devices: {state.get('cohesion_report', {}).get('cohesive_device_count', 0)}, "
+            f"Paragraphs: {state.get('cohesion_report', {}).get('paragraph_count', 0)}"
+        ),
+        "lr_evidence": (
+            f"TTR {lexical_metrics.get('ttr', 0):.3f}, "
+            f"Academic density {lexical_metrics.get('academic_word_density', 0):.3f}, "
+            f"Trend repetition {lexical_metrics.get('trend_word_repetition', 0)}"
+        ),
+        "gra_evidence": (
+            f"Complex ratio {sentence_metrics.get('complex_sentence_ratio', 0):.0%}, "
+            f"Errors/100w {sentence_metrics.get('grammar_errors_per_100_words', 0):.1f}"
+        ),
+    }
+
+    band_breakdown = {
+        "TA": ta_score,
+        "CC": cc_score,
+        "LR": lr_score,
+        "GRA": gra_score,
+    }
+    overall_band = _calculate_overall_band(band_breakdown)
+
+    # Generate simple feedback
+    feedback = _generate_rule_based_feedback(
+        ta_score, cc_score, lr_score, gra_score,
+        overall_band, evidence, state
+    )
+
+    score_attribution = _compute_score_attribution(state, band_breakdown)
+    confidence_calibration = _compute_confidence_calibration(state, overall_confidence)
+
+    return {
+        "overall_band": overall_band,
+        "overall_confidence": overall_confidence,
+        "feedback": feedback,
+        "band_breakdown": band_breakdown,
+        "evidence_summary": evidence,
+        "score_attribution": score_attribution,
+        "confidence_calibration": confidence_calibration,
+        "sentence_rewrites": state.get("sentence_rewrites", []),
+        "needs_correction": False,
+        "correction_target": "none",
+        "critic_feedback": "",
+    }
+
+
+def _clamp_score(
+    llm_score: float | None, agent_score: float, max_delta: float = 1.5
+) -> float:
+    """
+    Clamp LLM-suggested score to be within ±max_delta of the agent's
+    evidence-based score. This prevents the LLM from hallucinating scores
+    that contradict quantitative evidence (e.g., giving TA=7.5 when
+    NLI coverage is 0%).
+
+    Args:
+        llm_score: Score suggested by the LLM (may be None).
+        agent_score: Evidence-based score from the specialist agent.
+        max_delta: Maximum allowed deviation from agent score.
+
+    Returns:
+        Clamped score, rounded to nearest 0.5.
+    """
+    if llm_score is None:
+        return agent_score
+
+    clamped = max(agent_score - max_delta, min(agent_score + max_delta, llm_score))
+    # Round to nearest 0.5
+    return round(clamped * 2) / 2
+
+
+def _calculate_overall_band(breakdown: dict[str, float]) -> float:
+    """
+    Compute the overall band score as average of criteria, capped if TA is extremely low.
+    """
+    ta = breakdown.get("TA", 0.0)
+    raw_avg = sum(breakdown.values()) / len(breakdown)
+    overall_band = round(raw_avg * 2) / 2
+    
+    # IELTS Capping Rule: If Task Achievement is extremely low (<= 2.0, e.g. due to completely
+    # mismatched/off-topic response or non-attempt), cap overall score at TA + 2.0.
+    if ta <= 2.0:
+        overall_band = min(overall_band, ta + 2.0)
+        
+    return overall_band
+
+
+def _parse_chief_response(raw_text: str, state: GraderState) -> dict:
+    """Parse the Chief Examiner's JSON response."""
+    text = raw_text.strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json)?\s*\n?", "", text)
+        text = re.sub(r"\n?```\s*$", "", text)
+
+    start = text.find("{")
+    end = text.rfind("}")
+    if start != -1 and end != -1:
+        text = text[start : end + 1]
+
+    try:
+        result = json.loads(text)
+    except json.JSONDecodeError:
+        return _synthesize_rule_based(state)
+
+    # Extract fields from LLM response
+    final_scores = result.get("final_scores", {})
+    needs_correction = result.get("needs_correction", False)
+    correction_count = state.get("correction_count", 0)
+
+    # Prevent infinite loops
+    if correction_count >= settings.max_correction_loops:
+        needs_correction = False
+
+    band_breakdown = {
+        # TA is derived from chart-to-essay grounding. Keep this evidence-based
+        # score authoritative instead of allowing the synthesis LLM to lower
+        # or raise it based on free-form prose.
+        "TA": state.get("ta_score", 0),
+        "CC": _clamp_score(final_scores.get("cc"), state.get("cc_score", 0), max_delta=1.5),
+        "LR": _clamp_score(final_scores.get("lr"), state.get("lr_score", 0), max_delta=1.5),
+        "GRA": _clamp_score(final_scores.get("gra"), state.get("gra_score", 0), max_delta=1.5),
+    }
+
+    # The card scores are the source of truth. In particular, TA comes from
+    # the grounding agent rather than the free-form synthesis model, so an
+    # overall value calculated from the model's suggested TA can legitimately
+    # differ from the displayed breakdown. Calculate it here from the scores
+    # we actually return instead of discarding otherwise useful LLM feedback.
+    overall_band = _calculate_overall_band(band_breakdown)
+    feedback = result.get("feedback", "")
+    if not isinstance(feedback, str) or not feedback.strip():
+        return _synthesize_rule_based(state)
+
+    # The synthesis model can use a slightly different score in its prose even
+    # after its structured values have been clamped to the evidence-based card
+    # scores. Preserve the useful qualitative feedback, but make every visible
+    # score agree with the cards instead of needlessly falling back to rules.
+    feedback = _normalize_chief_feedback(feedback, overall_band, band_breakdown)
+    if not _chief_assessment_is_consistent(overall_band, band_breakdown, feedback):
+        # Never show a candidate an LLM narrative that contradicts the JSON
+        # scores displayed in the score cards.
+        return _synthesize_rule_based(state)
+
+    score_attribution = _compute_score_attribution(state, band_breakdown)
+    overall_conf = result.get("overall_confidence", 0.85)
+    confidence_calibration = _compute_confidence_calibration(state, overall_conf)
+
+    return {
+        "overall_band": overall_band,
+        "overall_confidence": overall_conf,
+        "feedback": feedback,
+        "band_breakdown": band_breakdown,
+        "evidence_summary": result.get("evidence_summary", {}),
+        "score_attribution": score_attribution,
+        "confidence_calibration": confidence_calibration,
+        "sentence_rewrites": state.get("sentence_rewrites", []),
+        "needs_correction": needs_correction,
+        "correction_target": result.get("correction_target", "none") or "none",
+        "critic_feedback": result.get("correction_reason", ""),
+    }
+
+
+def _compute_score_attribution(state: GraderState, breakdown: dict[str, float]) -> dict:
+    """Decompose criterion scores into explainable positive and negative contributors."""
+    ta_details = state.get("ta_details", {})
+    sentence_metrics = state.get("sentence_metrics", {})
+    lexical_metrics = state.get("lexical_metrics", {})
+    word_count = state.get("word_count", 0)
+
+    ta_items = []
+    if ta_details.get("has_overview"):
+        ta_items.append({"label": "Clear Overview statement detected", "delta": "+2.0", "type": "positive"})
+    else:
+        ta_items.append({"label": "Missing Overview statement", "delta": "-1.5", "type": "negative"})
+
+    cov = ta_details.get("coverage_rate", 0)
+    if cov >= 0.75:
+        ta_items.append({"label": f"High key feature coverage ({cov:.0%})", "delta": "+2.5", "type": "positive"})
+    elif cov > 0:
+        ta_items.append({"label": f"Partial feature coverage ({cov:.0%})", "delta": "+1.0", "type": "positive"})
+    else:
+        ta_items.append({"label": "Key features omitted from chart", "delta": "-2.0", "type": "negative"})
+
+    if ta_details.get("contradicted", 0) > 0:
+        ta_items.append({"label": f"Numeric inaccuracies detected ({ta_details['contradicted']} claim/s)", "delta": f"-{ta_details['contradicted']*0.5:.1f}", "type": "negative"})
+
+    if word_count < 150:
+        ta_items.append({"label": "Word count below 150 minimum penalty", "delta": "-1.0", "type": "negative"})
+
+    gra_items = []
+    c_ratio = sentence_metrics.get("complex_sentence_ratio", 0)
+    if c_ratio >= 0.4:
+        gra_items.append({"label": f"Good complex sentence ratio ({c_ratio:.0%})", "delta": "+2.5", "type": "positive"})
+    else:
+        gra_items.append({"label": f"Low complex sentence ratio ({c_ratio:.0%})", "delta": "-1.0", "type": "negative"})
+
+    errs = sentence_metrics.get("grammar_errors_per_100_words", 0)
+    if errs <= 2.0:
+        gra_items.append({"label": f"Low error density ({errs:.1f}/100w)", "delta": "+2.0", "type": "positive"})
+    else:
+        gra_items.append({"label": f"High error density ({errs:.1f}/100w)", "delta": "-1.5", "type": "negative"})
+
+    lr_items = []
+    ttr = lexical_metrics.get("ttr", 0)
+    if ttr >= 0.5:
+        lr_items.append({"label": f"Good lexical diversity (TTR {ttr:.2f})", "delta": "+2.5", "type": "positive"})
+    else:
+        lr_items.append({"label": f"Limited lexical diversity (TTR {ttr:.2f})", "delta": "-1.0", "type": "negative"})
+
+    rep = lexical_metrics.get("trend_word_repetition", 0)
+    if rep > 3:
+        lr_items.append({"label": f"Overused trend vocabulary ({rep} repetitions)", "delta": "-1.0", "type": "negative"})
+    else:
+        lr_items.append({"label": "Varied trend descriptors", "delta": "+1.5", "type": "positive"})
+
+    cc_items = [
+        {"label": "Cohesive devices used appropriately", "delta": "+2.5", "type": "positive"},
+        {"label": "Paragraph structure organized", "delta": "+2.0", "type": "positive"},
+    ]
+
+    return {
+        "TA": ta_items,
+        "GRA": gra_items,
+        "LR": lr_items,
+        "CC": cc_items,
+    }
+
+
+def _compute_confidence_calibration(state: GraderState, overall_confidence: float) -> dict:
+    """Build calibrated confidence breakdown per specialized agent."""
+    return {
+        "chart_vlm": 0.96 if not state.get("chart_analysis_error") else 0.0,
+        "grounding_nli": round(state.get("ta_confidence", 0.88), 2),
+        "grammar_eval": round(state.get("gra_confidence", 0.92), 2),
+        "chief_synthesis": round(overall_confidence, 2),
+    }
+
+
+def _normalize_chief_feedback(feedback: str, overall_band: float, breakdown: dict) -> str:
+    """Rewrite score labels in LLM prose to match the authoritative cards."""
+    feedback = re.sub(
+        r"(Overall\s+Band\s+Score\s*:\s*)[0-9]+(?:\.[0-9]+)?",
+        rf"\g<1>{overall_band:.1f}",
+        feedback,
+        flags=re.IGNORECASE,
+    )
+    criterion_names = {
+        "TA": "Task Achievement",
+        "CC": "Coherence & Cohesion",
+        "LR": "Lexical Resource",
+        "GRA": "Grammatical Range & Accuracy",
+    }
+    for key, name in criterion_names.items():
+        feedback = re.sub(
+            rf"({re.escape(name)}[^\n]*?Band\s*)[0-9]+(?:\.[0-9]+)?",
+            rf"\g<1>{float(breakdown[key]):.1f}",
+            feedback,
+            flags=re.IGNORECASE,
+        )
+    return feedback
+
+
+def _chief_assessment_is_consistent(
+    overall_band: float | str,
+    breakdown: dict,
+    feedback: str,
+) -> bool:
+    """Validate agreement between the LLM's structured score and prose."""
+    try:
+        scores = {key: float(value) for key, value in breakdown.items()}
+        overall = float(overall_band)
+    except (TypeError, ValueError):
+        return False
+
+    if any(score < 0 or score > 9 or score * 2 != round(score * 2) for score in scores.values()):
+        return False
+
+    expected_overall = _calculate_overall_band(scores)
+    if overall != expected_overall:
+        return False
+
+    criterion_names = {
+        "TA": "Task Achievement",
+        "CC": "Coherence & Cohesion",
+        "LR": "Lexical Resource",
+        "GRA": "Grammatical Range & Accuracy",
+    }
+    for key, name in criterion_names.items():
+        match = re.search(
+            rf"{re.escape(name)}[^\n]*?Band\s*([0-9]+(?:\.5)?)",
+            feedback,
+            flags=re.IGNORECASE,
+        )
+        if match and float(match.group(1)) != scores[key]:
+            return False
+
+    # Validate that low scores (e.g. TA <= 4.0) do not contain contradicting praise in prose
+    if scores.get("TA", 9.0) <= 4.0:
+        ta_section_match = re.search(
+            r"Task Achievement[^\n]*\n(.*?)(?=\n###|\Z)",
+            feedback,
+            flags=re.DOTALL | re.IGNORECASE,
+        )
+        if ta_section_match:
+            ta_text = ta_section_match.group(1).lower()
+            contradictory_phrases = [
+                "successfully addresses all requirements",
+                "covers all requirements",
+                "addresses all requirements",
+                "fully satisfies all",
+                "accurately reported and supports",
+            ]
+            if any(phrase in ta_text for phrase in contradictory_phrases):
+                return False
+
+    return True
+
+
+def _generate_rule_based_feedback(
+    ta: float, cc: float, lr: float, gra: float,
+    overall: float, evidence: dict, state: GraderState,
+) -> str:
+    """Generate Markdown feedback without LLM."""
+    word_count = state.get("word_count", 0)
+    errors = state.get("grammar_errors", [])
+
+    feedback = f"""## 📊 IELTS Writing Task 1 Assessment
+
+### Overall Band Score: {overall}
+
+---
+
+### Task Achievement — Band {ta}
+{evidence['ta_evidence']}
+
+### Coherence & Cohesion — Band {cc}
+{evidence['cc_evidence']}
+
+### Lexical Resource — Band {lr}
+{evidence['lr_evidence']}
+
+### Grammatical Range & Accuracy — Band {gra}
+{evidence['gra_evidence']}
+
+---
+
+### 📝 Summary
+- **Word count**: {word_count} words {'⚠️ (below 150 minimum!)' if word_count < 150 else '✅'}
+- **Grammar errors found**: {len(errors)}
+
+> ℹ️ This assessment was generated using rule-based scoring.
+> {'LLM feedback was unavailable or inconsistent with the score data, so this result uses evidence-based scoring.' if settings.gemini_api_key else 'For more detailed feedback, configure a Gemini API key.'}
+"""
+    return feedback

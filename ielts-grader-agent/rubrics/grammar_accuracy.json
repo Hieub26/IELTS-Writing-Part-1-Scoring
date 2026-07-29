@@ -1,0 +1,82 @@
+{
+  "9": {
+    "description": "uses a wide range of structures with full flexibility and accuracy; rare minor errors occur only as 'slips'",
+    "heuristics": {
+      "min_complex_sentence_ratio": 0.55,
+      "max_grammar_errors_per_100_words": 0.5,
+      "min_sentence_variety_score": 0.80
+    }
+  },
+  "8": {
+    "description": "uses a wide range of structures; the majority of sentences are error-free; makes only very occasional errors or inappropriacies",
+    "heuristics": {
+      "min_complex_sentence_ratio": 0.45,
+      "max_grammar_errors_per_100_words": 1.0,
+      "min_sentence_variety_score": 0.70
+    }
+  },
+  "7": {
+    "description": "uses a variety of complex structures; produces frequent error-free sentences; has good control of grammar and punctuation but may make a few errors",
+    "heuristics": {
+      "min_complex_sentence_ratio": 0.35,
+      "max_grammar_errors_per_100_words": 2.0,
+      "min_sentence_variety_score": 0.60
+    }
+  },
+  "6": {
+    "description": "uses a mix of simple and complex sentence forms; makes some errors in grammar and punctuation but they rarely reduce communication",
+    "heuristics": {
+      "min_complex_sentence_ratio": 0.25,
+      "max_grammar_errors_per_100_words": 3.5,
+      "min_sentence_variety_score": 0.45
+    }
+  },
+  "5": {
+    "description": "uses only a limited range of structures; attempts complex sentences but these tend to be less accurate than simple sentences; may make frequent grammatical errors and punctuation may be faulty; errors can cause some difficulty for the reader",
+    "heuristics": {
+      "min_complex_sentence_ratio": 0.15,
+      "max_grammar_errors_per_100_words": 5.0,
+      "min_sentence_variety_score": 0.30
+    }
+  },
+  "4": {
+    "description": "uses only a very limited range of structures with only rare use of subordinate clauses; some structures are accurate but errors predominate, and punctuation is often faulty",
+    "heuristics": {
+      "min_complex_sentence_ratio": 0.10,
+      "max_grammar_errors_per_100_words": 7.0,
+      "min_sentence_variety_score": 0.20
+    }
+  },
+  "3": {
+    "description": "attempts sentence forms but errors in grammar and punctuation predominate and distort the meaning",
+    "heuristics": {
+      "min_complex_sentence_ratio": 0.05,
+      "max_grammar_errors_per_100_words": 10.0,
+      "min_sentence_variety_score": 0.10
+    }
+  },
+  "2": {
+    "description": "cannot use sentence forms except in memorised phrases; no control of word formation and/or spelling",
+    "heuristics": {
+      "min_complex_sentence_ratio": 0.0,
+      "max_grammar_errors_per_100_words": 15.0,
+      "min_sentence_variety_score": 0.0
+    }
+  },
+  "1": {
+    "description": "cannot use sentence forms at all",
+    "heuristics": {
+      "min_complex_sentence_ratio": 0.0,
+      "max_grammar_errors_per_100_words": 20.0,
+      "min_sentence_variety_score": 0.0
+    }
+  },
+  "0": {
+    "description": "does not attend; does not attempt the task in any way",
+    "heuristics": {
+      "min_complex_sentence_ratio": 0.0,
+      "max_grammar_errors_per_100_words": 0.0,
+      "min_sentence_variety_score": 0.0
+    }
+  }
+}

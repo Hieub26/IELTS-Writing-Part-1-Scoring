@@ -1,0 +1,7 @@
+The line graphs illustrate how many people traveled by train between 2000 and 2009 and how punctual trains were during this period.
+
+Overall, it can be seen that both the number of passengers and the punctuality of the railway system fluctuated over the period shown.
+
+Regarding train usage, the number of travelers varied in the first half of the period, after which it grew noticeably and reached its peak of over 47 million in 2005. However, the following three consecutive years witnessed a slow decline of about 7 million in the number of train commuters before the figure rose to roughly 42 million in 2009.
+
+In terms of punctuality, despite the expectation that 95% of trains would run on time, the rate was 92% at the beginning of the period. The figure then increased, met its objective in 2002, and continued to rise to 96% in 2004. However, the railway system failed short of its target again between 2005 and 2007. Afterward, punctuality significantly improved and exceeded the aim in the last two years of the period (at 97%).

@@ -1,0 +1,112 @@
+{
+  "9": {
+    "description": "uses cohesion in such a way that it attracts no attention; skilfully manages paragraphing",
+    "heuristics": {
+      "min_cohesive_devices": 8,
+      "max_repeated_connectors": 2,
+      "requires_clear_paragraphing": true,
+      "min_paragraph_count": 3,
+      "requires_overview_paragraph": true
+    }
+  },
+  "8": {
+    "description": "sequences information and ideas logically; manages all aspects of cohesion well; uses paragraphing sufficiently and appropriately",
+    "heuristics": {
+      "min_cohesive_devices": 7,
+      "max_repeated_connectors": 2,
+      "requires_clear_paragraphing": true,
+      "min_paragraph_count": 3,
+      "requires_overview_paragraph": true
+    }
+  },
+  "7": {
+    "description": "logically organises information and ideas; there is clear progression throughout; uses a range of cohesive devices appropriately although there may be some under-/over-use",
+    "heuristics": {
+      "min_cohesive_devices": 5,
+      "max_repeated_connectors": 3,
+      "requires_clear_paragraphing": true,
+      "min_paragraph_count": 3,
+      "requires_overview_paragraph": true
+    }
+  },
+  "6": {
+    "description": "arranges information and ideas coherently and there is a clear overall progression; uses cohesive devices effectively, but cohesion within and/or between sentences may be faulty or mechanical; may not always use referencing clearly or appropriately",
+    "heuristics": {
+      "min_cohesive_devices": 4,
+      "max_repeated_connectors": 4,
+      "requires_clear_paragraphing": true,
+      "min_paragraph_count": 2,
+      "requires_overview_paragraph": false
+    }
+  },
+  "5": {
+    "description": "presents information with some organisation but there may be a lack of overall progression; makes inadequate, inaccurate or over-use of cohesive devices; may be repetitive because of lack of referencing and substitution",
+    "heuristics": {
+      "min_cohesive_devices": 2,
+      "max_repeated_connectors": 6,
+      "requires_clear_paragraphing": false,
+      "min_paragraph_count": 2,
+      "requires_overview_paragraph": false
+    }
+  },
+  "4": {
+    "description": "presents information and ideas but these are not arranged coherently and there is no clear progression in the response; uses some basic cohesive devices but these may be inaccurate or repetitive",
+    "heuristics": {
+      "min_cohesive_devices": 1,
+      "max_repeated_connectors": 8,
+      "requires_clear_paragraphing": false,
+      "min_paragraph_count": 1,
+      "requires_overview_paragraph": false
+    }
+  },
+  "3": {
+    "description": "does not organise ideas logically; may use a very limited range of cohesive devices, and those used may not indicate a logical relationship between ideas",
+    "heuristics": {
+      "min_cohesive_devices": 0,
+      "max_repeated_connectors": 10,
+      "requires_clear_paragraphing": false,
+      "min_paragraph_count": 1,
+      "requires_overview_paragraph": false
+    }
+  },
+  "2": {
+    "description": "has very little control of organisational features",
+    "heuristics": {
+      "min_cohesive_devices": 0,
+      "max_repeated_connectors": 15,
+      "requires_clear_paragraphing": false,
+      "min_paragraph_count": 1,
+      "requires_overview_paragraph": false
+    }
+  },
+  "1": {
+    "description": "fails to communicate any message",
+    "heuristics": {
+      "min_cohesive_devices": 0,
+      "max_repeated_connectors": 20,
+      "requires_clear_paragraphing": false,
+      "min_paragraph_count": 0,
+      "requires_overview_paragraph": false
+    }
+  },
+  "0": {
+    "description": "does not attend; does not attempt the task in any way",
+    "heuristics": {
+      "min_cohesive_devices": 0,
+      "max_repeated_connectors": 0,
+      "requires_clear_paragraphing": false,
+      "min_paragraph_count": 0,
+      "requires_overview_paragraph": false
+    }
+  },
+  "cohesive_devices_dictionary": {
+    "addition": ["furthermore", "moreover", "in addition", "additionally", "also", "besides", "as well as", "not only...but also"],
+    "contrast": ["however", "nevertheless", "on the other hand", "in contrast", "conversely", "whereas", "while", "although", "despite", "despite the fact that", "even though", "yet", "but"],
+    "cause_result": ["as a result", "consequently", "therefore", "thus", "hence", "because", "due to", "owing to", "since", "for this reason", "leading to"],
+    "comparison": ["similarly", "likewise", "in the same way", "compared to", "in comparison"],
+    "sequence": ["firstly", "secondly", "thirdly", "finally", "subsequently", "then", "next", "following this", "after that", "initially", "to begin with"],
+    "example": ["for example", "for instance", "such as", "namely", "to illustrate", "in particular"],
+    "summary": ["overall", "in summary", "to summarise", "in conclusion", "to conclude", "in general", "on the whole", "all in all"],
+    "emphasis": ["particularly", "especially", "significantly", "notably", "remarkably", "most importantly", "it is worth noting"]
+  }
+}

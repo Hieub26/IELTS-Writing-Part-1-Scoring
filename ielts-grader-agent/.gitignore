@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual Environment
+venv/
+.venv/
+env/
+
+# Environment Variables
+.env
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# LanguageTool
+.languagetool/
+
+# spaCy models (downloaded at runtime)
+# en_core_web_sm/
+
+# Streamlit
+.streamlit/
+
+# Data (keep samples, ignore user uploads)
+storage/
+uploads/
+
+# Logs
+*.log

@@ -1,0 +1,7 @@
+The given bar chart presents data about the percentages of renewable energy with regards to the total energy production in four different countries (Australia, Sweden, Iceland and Turkey) in three years; 1997, 2000 and 2010.
+
+Overall, Sweden and Iceland witnessed an upward trend in the use of renewable energy sources in the three examined years. It can also be seen that among the four countries, this type of energy was most popular in Iceland.
+
+In 1997, almost half of the total energy produced in Iceland came from renewable resources. This figure continued to climb steadily to 60% in 2000 and more than 70% in 2010. Meanwhile, in 1997, only approximately 5% of the entire amount of energy produced was generated from natural resources in Sweden, who experienced a similar trend to that of Iceland in regards to proportion of renewable energy produced.
+
+Regarding Australia, nearly 10% of the energy supply was from renewable resources in 1997, and this figure decreased slightly to around 5% in 2010. Similarly, the percentage of renewable energy used in Turkey experienced a decline over the years from approximately 37% in 1997 down to just under 35% in 2010.
