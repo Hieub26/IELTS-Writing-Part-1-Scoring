@@ -62,8 +62,8 @@ graph TD
 
 ### 1. Clone the Repository
 ```bash
-git clone https://github.com/USERNAME/REPO_NAME.git
-cd "IELTS Writing Part 1 Scoring/ielts-grader-agent"
+git clone https://github.com/Hieub26/IELTS-Writing-Part-1-Scoring.git
+cd IELTS-Writing-Part-1-Scoring/ielts-grader-agent
 ```
 
 ### 2. Set Up Environment & Install Dependencies
