@@ -11,20 +11,17 @@ Features:
 
 from __future__ import annotations
 
-import json
 import re
-import time
-
-from google import genai
-from google.genai import types
 
 from app.config import settings
 from app.core.state import GraderState
+from app.core.utils.llm import generate_json, llm_available, parse_json_object
 from app.core.utils.rubric_loader import get_all_descriptions
 from app.core.utils.prompt_templates import CHIEF_EXAMINER_PROMPT
 
 
-MAX_LLM_RETRIES = 3
+# Agents that can act on a re-examination request (see critic.py).
+RERUNNABLE_TARGETS = {"grounding", "coherence"}
 
 
 def chief_examiner_node(state: GraderState) -> dict:
@@ -38,44 +35,14 @@ def chief_examiner_node(state: GraderState) -> dict:
         State updates with overall_band, feedback, evidence_summary,
         and correction flags.
     """
-    essay_text = state.get("essay_text", "")
-    word_count = state.get("word_count", 0)
-
-    # Collect all scores and metrics
-    ta_score = state.get("ta_score", 0.0)
-    ta_confidence = state.get("ta_confidence", 0.0)
-    ta_details = state.get("ta_details", {})
-
-    gra_score = state.get("gra_score", 0.0)
-    gra_confidence = state.get("gra_confidence", 0.0)
-    lr_score = state.get("lr_score", 0.0)
-    lr_confidence = state.get("lr_confidence", 0.0)
-
-    cc_score = state.get("cc_score", 0.0)
-    cc_confidence = state.get("cc_confidence", 0.0)
-    cc_details = state.get("cc_details", {})
-
-    sentence_metrics = state.get("sentence_metrics", {})
-    lexical_metrics = state.get("lexical_metrics", {})
-    grammar_errors = state.get("grammar_errors", [])
-
-    # ═══════════════════════════════════════════
-    # LLM-based Synthesis
-    # ═══════════════════════════════════════════
-
-    if settings.gemini_api_key:
-        result = _synthesize_with_llm(state)
-    else:
-        result = _synthesize_rule_based(state)
-
-    return result
+    if llm_available():
+        return _synthesize_with_llm(state)
+    return _synthesize_rule_based(state)
 
 
 def _synthesize_with_llm(state: GraderState) -> dict:
     """Use Gemini LLM for final synthesis and cross-validation."""
     try:
-        client = genai.Client(api_key=settings.gemini_api_key)
-
         # Load all rubric descriptions
         ta_rubric = get_all_descriptions("task_achievement")
         cc_rubric = get_all_descriptions("coherence_cohesion")
@@ -86,6 +53,7 @@ def _synthesize_with_llm(state: GraderState) -> dict:
         cc_details = state.get("cc_details", {})
         sentence_metrics = state.get("sentence_metrics", {})
         lexical_metrics = state.get("lexical_metrics", {})
+        limitations = _analysis_limitations(state)
 
         prompt = CHIEF_EXAMINER_PROMPT.format(
             ta_rubric=ta_rubric,
@@ -116,12 +84,12 @@ def _synthesize_with_llm(state: GraderState) -> dict:
             logical_progression=cc_details.get("logical_progression", "unknown"),
             paragraphing_quality=cc_details.get("paragraphing_quality", "unknown"),
             word_count=state.get("word_count", 0),
+            analysis_notes="\n".join(f"- {note}" for note in limitations) or "None",
+            task_prompt=(state.get("task_prompt") or "").strip() or "Not provided.",
             essay_text=state.get("essay_text", ""),
         )
 
-        response = _generate_with_retry(client, prompt)
-
-        return _parse_chief_response(response.text, state)
+        return _apply_chief_result(generate_json(prompt), state)
 
     except Exception as e:
         # Fallback to rule-based on LLM error
@@ -130,24 +98,27 @@ def _synthesize_with_llm(state: GraderState) -> dict:
         return result
 
 
-def _generate_with_retry(client: genai.Client, prompt: str):
-    """Retry temporary Gemini capacity/rate-limit failures before fallback."""
-    for attempt in range(MAX_LLM_RETRIES):
-        try:
-            return client.models.generate_content(
-                model=settings.gemini_model_llm,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    temperature=0.2,
-                    max_output_tokens=4096,
-                    response_mime_type="application/json",
-                ),
-            )
-        except Exception as exc:
-            is_transient = "503" in str(exc) or "429" in str(exc)
-            if not is_transient or attempt == MAX_LLM_RETRIES - 1:
-                raise
-            time.sleep(2 ** attempt)
+def _analysis_limitations(state: GraderState) -> list[str]:
+    """List the parts of the analysis that ran in a degraded mode."""
+    notes = []
+    if state.get("sentence_metrics", {}).get("language_tool_error"):
+        notes.append(
+            "Grammar and spelling error detection (LanguageTool) was unavailable, "
+            "so GRA and LR rest on sentence-structure and vocabulary metrics only."
+        )
+    cc_details = state.get("cc_details", {})
+    if cc_details and not cc_details.get("llm_assessed", True):
+        notes.append(
+            "The qualitative coherence assessment was unavailable, "
+            "so CC rests on measured cohesion and paragraphing only."
+        )
+    return notes
+
+
+def _overall_confidence(state: GraderState) -> float:
+    """Average the specialist agents' confidence in their own evidence."""
+    keys = ("ta_confidence", "cc_confidence", "lr_confidence", "gra_confidence")
+    return round(sum(state.get(key) or 0.0 for key in keys) / len(keys), 3)
 
 
 def _synthesize_rule_based(state: GraderState) -> dict:
@@ -157,12 +128,7 @@ def _synthesize_rule_based(state: GraderState) -> dict:
     lr_score = state.get("lr_score", 0.0)
     gra_score = state.get("gra_score", 0.0)
 
-    # Overall confidence: weighted average
-    ta_conf = state.get("ta_confidence", 0.5)
-    cc_conf = state.get("cc_confidence", 0.5)
-    lr_conf = state.get("lr_confidence", 0.5)
-    gra_conf = state.get("gra_confidence", 0.5)
-    overall_confidence = round((ta_conf + cc_conf + lr_conf + gra_conf) / 4, 3)
+    overall_confidence = _overall_confidence(state)
 
     # Build evidence summary
     ta_details = state.get("ta_details", {})
@@ -216,6 +182,7 @@ def _synthesize_rule_based(state: GraderState) -> dict:
         "score_attribution": score_attribution,
         "confidence_calibration": confidence_calibration,
         "sentence_rewrites": state.get("sentence_rewrites", []),
+        "analysis_warnings": _analysis_limitations(state),
         "needs_correction": False,
         "correction_target": "none",
         "critic_feedback": "",
@@ -265,29 +232,29 @@ def _calculate_overall_band(breakdown: dict[str, float]) -> float:
 
 def _parse_chief_response(raw_text: str, state: GraderState) -> dict:
     """Parse the Chief Examiner's JSON response."""
-    text = raw_text.strip()
-    if text.startswith("```"):
-        text = re.sub(r"^```(?:json)?\s*\n?", "", text)
-        text = re.sub(r"\n?```\s*$", "", text)
-
-    start = text.find("{")
-    end = text.rfind("}")
-    if start != -1 and end != -1:
-        text = text[start : end + 1]
-
     try:
-        result = json.loads(text)
-    except json.JSONDecodeError:
+        result = parse_json_object(raw_text)
+    except ValueError:
         return _synthesize_rule_based(state)
+    return _apply_chief_result(result, state)
 
+
+def _apply_chief_result(result: dict, state: GraderState) -> dict:
+    """Validate the Chief Examiner's JSON verdict and turn it into state updates."""
     # Extract fields from LLM response
-    final_scores = result.get("final_scores", {})
-    needs_correction = result.get("needs_correction", False)
+    final_scores = result.get("final_scores") or {}
+    correction_target = str(result.get("correction_target") or "none").lower()
+    needs_correction = (
+        bool(result.get("needs_correction", False))
+        and correction_target in RERUNNABLE_TARGETS
+    )
     correction_count = state.get("correction_count", 0)
 
     # Prevent infinite loops
     if correction_count >= settings.max_correction_loops:
         needs_correction = False
+    if not needs_correction:
+        correction_target = "none"
 
     band_breakdown = {
         # TA is derived from chart-to-essay grounding. Keep this evidence-based
@@ -319,8 +286,14 @@ def _parse_chief_response(raw_text: str, state: GraderState) -> dict:
         # scores displayed in the score cards.
         return _synthesize_rule_based(state)
 
+    evidence_summary = result.get("evidence_summary")
+    if not isinstance(evidence_summary, dict):
+        evidence_summary = {}
+
     score_attribution = _compute_score_attribution(state, band_breakdown)
-    overall_conf = result.get("overall_confidence", 0.85)
+    # The model's self-reported confidence is not evidence; report the
+    # specialist agents' own confidence instead.
+    overall_conf = _overall_confidence(state)
     confidence_calibration = _compute_confidence_calibration(state, overall_conf)
 
     return {
@@ -328,73 +301,105 @@ def _parse_chief_response(raw_text: str, state: GraderState) -> dict:
         "overall_confidence": overall_conf,
         "feedback": feedback,
         "band_breakdown": band_breakdown,
-        "evidence_summary": result.get("evidence_summary", {}),
+        "evidence_summary": evidence_summary,
         "score_attribution": score_attribution,
         "confidence_calibration": confidence_calibration,
         "sentence_rewrites": state.get("sentence_rewrites", []),
+        "analysis_warnings": _analysis_limitations(state),
         "needs_correction": needs_correction,
-        "correction_target": result.get("correction_target", "none") or "none",
-        "critic_feedback": result.get("correction_reason", ""),
+        "correction_target": correction_target,
+        "critic_feedback": result.get("correction_reason") or "",
     }
 
 
 def _compute_score_attribution(state: GraderState, breakdown: dict[str, float]) -> dict:
-    """Decompose criterion scores into explainable positive and negative contributors."""
+    """
+    List the measured strengths and weaknesses behind each criterion score.
+
+    Every item quotes a metric the agents actually computed.  The band comes
+    from threshold matching, not from adding points, so items carry a
+    direction ("positive"/"negative") rather than a point value.
+    """
     ta_details = state.get("ta_details", {})
     sentence_metrics = state.get("sentence_metrics", {})
     lexical_metrics = state.get("lexical_metrics", {})
+    cohesion_report = state.get("cohesion_report", {})
+    cc_details = state.get("cc_details", {})
     word_count = state.get("word_count", 0)
+
+    def item(label: str, positive: bool) -> dict:
+        return {"label": label, "type": "positive" if positive else "negative"}
 
     ta_items = []
     if ta_details.get("has_overview"):
-        ta_items.append({"label": "Clear Overview statement detected", "delta": "+2.0", "type": "positive"})
+        ta_items.append(item("Clear Overview statement detected", True))
     else:
-        ta_items.append({"label": "Missing Overview statement", "delta": "-1.5", "type": "negative"})
+        ta_items.append(item("Missing Overview statement", False))
 
     cov = ta_details.get("coverage_rate", 0)
     if cov >= 0.75:
-        ta_items.append({"label": f"High key feature coverage ({cov:.0%})", "delta": "+2.5", "type": "positive"})
+        ta_items.append(item(f"High key feature coverage ({cov:.0%})", True))
     elif cov > 0:
-        ta_items.append({"label": f"Partial feature coverage ({cov:.0%})", "delta": "+1.0", "type": "positive"})
+        ta_items.append(item(f"Partial feature coverage ({cov:.0%})", False))
     else:
-        ta_items.append({"label": "Key features omitted from chart", "delta": "-2.0", "type": "negative"})
+        ta_items.append(item("Key features omitted from chart", False))
 
     if ta_details.get("contradicted", 0) > 0:
-        ta_items.append({"label": f"Numeric inaccuracies detected ({ta_details['contradicted']} claim/s)", "delta": f"-{ta_details['contradicted']*0.5:.1f}", "type": "negative"})
+        ta_items.append(item(
+            f"Numeric inaccuracies detected ({ta_details['contradicted']} claim/s)", False
+        ))
 
-    if word_count < 150:
-        ta_items.append({"label": "Word count below 150 minimum penalty", "delta": "-1.0", "type": "negative"})
+    if word_count < settings.min_word_count:
+        ta_items.append(item(
+            f"Word count below the {settings.min_word_count}-word minimum (-1.0 band)", False
+        ))
 
     gra_items = []
     c_ratio = sentence_metrics.get("complex_sentence_ratio", 0)
     if c_ratio >= 0.4:
-        gra_items.append({"label": f"Good complex sentence ratio ({c_ratio:.0%})", "delta": "+2.5", "type": "positive"})
+        gra_items.append(item(f"Good complex sentence ratio ({c_ratio:.0%})", True))
     else:
-        gra_items.append({"label": f"Low complex sentence ratio ({c_ratio:.0%})", "delta": "-1.0", "type": "negative"})
+        gra_items.append(item(f"Low complex sentence ratio ({c_ratio:.0%})", False))
 
-    errs = sentence_metrics.get("grammar_errors_per_100_words", 0)
-    if errs <= 2.0:
-        gra_items.append({"label": f"Low error density ({errs:.1f}/100w)", "delta": "+2.0", "type": "positive"})
+    if sentence_metrics.get("language_tool_error"):
+        gra_items.append(item("Error density not measured (grammar checker unavailable)", False))
     else:
-        gra_items.append({"label": f"High error density ({errs:.1f}/100w)", "delta": "-1.5", "type": "negative"})
+        errs = sentence_metrics.get("grammar_errors_per_100_words", 0)
+        if errs <= 2.0:
+            gra_items.append(item(f"Low error density ({errs:.1f}/100w)", True))
+        else:
+            gra_items.append(item(f"High error density ({errs:.1f}/100w)", False))
 
     lr_items = []
     ttr = lexical_metrics.get("ttr", 0)
     if ttr >= 0.5:
-        lr_items.append({"label": f"Good lexical diversity (TTR {ttr:.2f})", "delta": "+2.5", "type": "positive"})
+        lr_items.append(item(f"Good lexical diversity (TTR {ttr:.2f})", True))
     else:
-        lr_items.append({"label": f"Limited lexical diversity (TTR {ttr:.2f})", "delta": "-1.0", "type": "negative"})
+        lr_items.append(item(f"Limited lexical diversity (TTR {ttr:.2f})", False))
 
     rep = lexical_metrics.get("trend_word_repetition", 0)
     if rep > 3:
-        lr_items.append({"label": f"Overused trend vocabulary ({rep} repetitions)", "delta": "-1.0", "type": "negative"})
+        lr_items.append(item(f"Overused trend vocabulary ({rep} repetitions)", False))
     else:
-        lr_items.append({"label": "Varied trend descriptors", "delta": "+1.5", "type": "positive"})
+        lr_items.append(item("Varied trend descriptors", True))
 
-    cc_items = [
-        {"label": "Cohesive devices used appropriately", "delta": "+2.5", "type": "positive"},
-        {"label": "Paragraph structure organized", "delta": "+2.0", "type": "positive"},
-    ]
+    cc_items = []
+    if cohesion_report:
+        devices = cohesion_report.get("cohesive_device_count", 0)
+        cc_items.append(item(f"{devices} distinct cohesive devices used", devices >= 5))
+
+        overused = cohesion_report.get("overused_devices", [])
+        if overused:
+            cc_items.append(item(f"Overused connectors: {', '.join(overused)}", False))
+
+        paragraphs = cohesion_report.get("paragraph_count", 0)
+        cc_items.append(item(f"{paragraphs} paragraph(s)", paragraphs >= 3))
+
+    progression = cc_details.get("logical_progression", "unknown")
+    if progression != "unknown":
+        cc_items.append(item(f"Logical progression: {progression}", progression != "poor"))
+    elif cc_details and not cc_details.get("llm_assessed", True):
+        cc_items.append(item("Logical progression not assessed (LLM unavailable)", False))
 
     return {
         "TA": ta_items,
@@ -405,12 +410,13 @@ def _compute_score_attribution(state: GraderState, breakdown: dict[str, float]) 
 
 
 def _compute_confidence_calibration(state: GraderState, overall_confidence: float) -> dict:
-    """Build calibrated confidence breakdown per specialized agent."""
+    """Report each specialist agent's own confidence next to the overall figure."""
     return {
-        "chart_vlm": 0.96 if not state.get("chart_analysis_error") else 0.0,
-        "grounding_nli": round(state.get("ta_confidence", 0.88), 2),
-        "grammar_eval": round(state.get("gra_confidence", 0.92), 2),
-        "chief_synthesis": round(overall_confidence, 2),
+        "grounding_nli": round(state.get("ta_confidence") or 0.0, 2),
+        "grammar_eval": round(state.get("gra_confidence") or 0.0, 2),
+        "lexical_eval": round(state.get("lr_confidence") or 0.0, 2),
+        "coherence_eval": round(state.get("cc_confidence") or 0.0, 2),
+        "overall": round(overall_confidence, 2),
     }
 
 
@@ -501,6 +507,9 @@ def _generate_rule_based_feedback(
     """Generate Markdown feedback without LLM."""
     word_count = state.get("word_count", 0)
     errors = state.get("grammar_errors", [])
+    limitations = "".join(
+        f"\n> ⚠️ {note}" for note in _analysis_limitations(state)
+    )
 
     feedback = f"""## 📊 IELTS Writing Task 1 Assessment
 
@@ -523,10 +532,10 @@ def _generate_rule_based_feedback(
 ---
 
 ### 📝 Summary
-- **Word count**: {word_count} words {'⚠️ (below 150 minimum!)' if word_count < 150 else '✅'}
+- **Word count**: {word_count} words {'⚠️ (below 150 minimum!)' if word_count < settings.min_word_count else '✅'}
 - **Grammar errors found**: {len(errors)}
 
 > ℹ️ This assessment was generated using rule-based scoring.
 > {'LLM feedback was unavailable or inconsistent with the score data, so this result uses evidence-based scoring.' if settings.gemini_api_key else 'For more detailed feedback, configure a Gemini API key.'}
 """
-    return feedback
+    return feedback + limitations

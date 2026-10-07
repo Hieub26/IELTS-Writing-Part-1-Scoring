@@ -4,8 +4,7 @@ This TypedDict defines the shared memory for all agents in the grading pipeline.
 """
 
 from __future__ import annotations
-from typing import TypedDict, Annotated
-from operator import add
+from typing import TypedDict
 
 
 class GraderState(TypedDict):
@@ -16,6 +15,7 @@ class GraderState(TypedDict):
     # ═══════════════════════════════════════════
     image_path: str                     # Path to the uploaded chart image
     essay_text: str                     # Candidate's essay text
+    task_prompt: str                    # Optional task statement shown with the chart
     word_count: int                     # Word count (computed at start)
 
     # ═══════════════════════════════════════════
@@ -61,14 +61,15 @@ class GraderState(TypedDict):
     feedback: str                       # Detailed feedback (Markdown)
     band_breakdown: dict                # {"TA": 7.0, "CC": 6.5, ...}
     evidence_summary: dict              # Per-criterion evidence
-    score_attribution: dict             # Score breakdown (+ / - points per criterion)
+    score_attribution: dict             # Measured strengths/weaknesses per criterion
     confidence_calibration: dict        # Per-agent confidence breakdown
     sentence_rewrites: list[dict]       # Possible alternative rewrite suggestions
+    analysis_warnings: list[str]        # Components that ran in a degraded mode
 
     # ═══════════════════════════════════════════
     # Control Flow
     # ═══════════════════════════════════════════
     correction_count: int               # Number of correction loops completed
     needs_correction: bool              # Whether Chief flagged inconsistency
-    correction_target: str              # "grounding"|"grammar"|"coherence"|"none"
+    correction_target: str              # "grounding"|"coherence"|"none"
     critic_feedback: str                # Specific feedback from Critic Agent

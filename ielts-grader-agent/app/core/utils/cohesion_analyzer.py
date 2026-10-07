@@ -15,6 +15,7 @@ import re
 from collections import Counter
 from functools import lru_cache
 
+from app.core.utils.linguistics import find_overview_sentence, get_nlp
 from app.core.utils.rubric_loader import load_rubric
 
 
@@ -114,20 +115,8 @@ def analyze_paragraph_structure(text: str) -> dict:
     paragraph_lengths = [len(p.split()) for p in paragraphs]
     para_count = len(paragraphs)
 
-    # Detect overview paragraph: contains overview/summary keywords
-    overview_keywords = [
-        "overall", "in general", "it is clear", "it can be seen",
-        "to summarize", "to summarise", "in summary", "generally",
-        "on the whole", "it is evident", "it is noticeable",
-        "the most striking", "the most notable", "a glance",
-    ]
-
-    has_overview = False
-    for para in paragraphs:
-        para_lower = para.lower()
-        if any(kw in para_lower for kw in overview_keywords):
-            has_overview = True
-            break
+    # Same sentence-level overview rule the grounding agent uses for TA.
+    has_overview = find_overview_sentence(text) is not None
 
     # Detect introduction: first paragraph often contains 'shows', 'illustrates',
     # 'depicts', 'presents', 'gives information', 'compares'
@@ -188,8 +177,6 @@ def analyze_referencing(
             "referencing_score": float,    # 0-1, higher = clearer referencing
         }
     """
-    from app.core.utils.linguistics import get_nlp
-
     nlp = get_nlp(nlp_model_name)
     pronouns_to_check = {"it", "they", "this", "these", "its", "their"}
 

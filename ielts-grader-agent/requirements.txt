@@ -1,28 +1,28 @@
 # ============================
 # IELTS Multi-Agent Grader
 # ============================
+# Lower bounds are the versions the test suite was last run against; upper
+# bounds stop a new major release from changing behaviour unnoticed.
 
-# --- LangGraph & LangChain ---
-langgraph>=0.4
-langchain-core>=0.3
+# --- LangGraph ---
+langgraph>=1.2,<2
 
 # --- Google Gemini API (VLM + LLM) ---
-google-genai>=1.0
+google-genai>=2.11,<3
 
 # --- NLP & Linguistics ---
-sentence-transformers>=3.0
-spacy>=3.8
-language-tool-python>=2.8
+sentence-transformers>=5.6,<6
+spacy>=3.8,<3.9
+language-tool-python>=3.4,<4
 
 # --- UI ---
-streamlit>=1.40
-plotly>=5.24
+streamlit>=1.59,<2
+plotly>=6.9,<7
 
 # --- Utilities ---
-python-dotenv>=1.0
-pydantic>=2.0
-pydantic-settings>=2.0
-Pillow>=10.0
+python-dotenv>=1.2,<2
+pydantic>=2.13,<3
+pydantic-settings>=2.14,<3
 
 # --- Development / verification ---
-pytest>=8.0
+pytest>=9.1,<10

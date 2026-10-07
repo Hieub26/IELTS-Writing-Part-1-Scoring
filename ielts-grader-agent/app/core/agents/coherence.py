@@ -14,12 +14,6 @@ Combines:
 
 from __future__ import annotations
 
-import json
-import time
-
-from google import genai
-from google.genai import types
-
 from app.config import settings
 from app.core.state import GraderState
 from app.core.utils.linguistics import segment_sentences
@@ -32,6 +26,7 @@ from app.core.utils.rubric_loader import (
     get_all_descriptions,
     match_score_to_band,
 )
+from app.core.utils.llm import generate_json, llm_available
 from app.core.utils.prompt_templates import CC_COHERENCE_PROMPT
 
 
@@ -79,11 +74,17 @@ def coherence_node(state: GraderState) -> dict:
     # Part 2: Qualitative Coherence Analysis (LLM)
     # ═══════════════════════════════════════════
 
+    is_correction = (
+        state.get("correction_target") == "coherence"
+        and state.get("correction_count", 0) > 0
+    )
     coherence_report = _assess_coherence_with_llm(
         essay_text=essay_text,
         cohesion_data=cohesion_data,
         paragraph_data=paragraph_data,
+        critic_feedback=state.get("critic_feedback", "") if is_correction else "",
     )
+    llm_assessed = coherence_report.get("coherence_score") is not None
 
     # ═══════════════════════════════════════════
     # Part 3: Combined CC Score
@@ -96,13 +97,18 @@ def coherence_node(state: GraderState) -> dict:
         "paragraph_count": paragraph_data["paragraph_count"],
     }
     cc_quant_score = match_score_to_band("coherence_cohesion", cc_quant_metrics)
+    cc_qual_score = coherence_report.get("coherence_score")
 
-    # Get qualitative score from LLM
-    cc_qual_score = coherence_report.get("coherence_score", cc_quant_score)
-
-    # Final CC score: weighted blend (60% quantitative, 40% qualitative)
-    # This ensures code-measurable aspects are grounded while LLM adds nuance
-    cc_score = round(cc_quant_score * 0.6 + cc_qual_score * 0.4, 1)
+    if llm_assessed:
+        # Weighted blend (60% quantitative, 40% qualitative): code-measurable
+        # aspects stay grounded while the LLM adds nuance.
+        blend_weights = {"quantitative": 0.6, "qualitative": 0.4}
+        cc_score = cc_quant_score * 0.6 + cc_qual_score * 0.4
+    else:
+        # No qualitative judgement is available.  Score on the measured
+        # cohesion alone rather than blending in an invented placeholder.
+        blend_weights = {"quantitative": 1.0, "qualitative": 0.0}
+        cc_score = cc_quant_score
 
     # Round to nearest 0.5
     cc_score = round(cc_score * 2) / 2
@@ -111,24 +117,24 @@ def coherence_node(state: GraderState) -> dict:
     # Part 4: Confidence Scoring
     # ═══════════════════════════════════════════
 
-    # Confidence based on:
-    # - Device detection is deterministic (high confidence)
-    # - LLM assessment has inherent variability
-    # - More paragraphs = more data = higher confidence
-    quant_confidence = 0.90  # Deterministic analysis
-    qual_confidence = 0.70   # LLM-based
-
-    if paragraph_data["paragraph_count"] >= 3:
-        qual_confidence += 0.05
-    if paragraph_data["has_overview"]:
-        qual_confidence += 0.05
-
-    cc_confidence = round(quant_confidence * 0.6 + qual_confidence * 0.4, 3)
+    # Heuristic, not a calibrated probability: counting devices only covers
+    # the cohesion half of the criterion, so confidence is capped at a medium
+    # level unless the qualitative assessment also ran.
+    if llm_assessed:
+        cc_confidence = 0.75
+        if paragraph_data["paragraph_count"] >= 3:
+            cc_confidence += 0.05
+        if paragraph_data["has_overview"]:
+            cc_confidence += 0.05
+    else:
+        cc_confidence = 0.45
 
     cc_details = {
         "quantitative_score": cc_quant_score,
         "qualitative_score": cc_qual_score,
-        "blend_weights": {"quantitative": 0.6, "qualitative": 0.4},
+        "blend_weights": blend_weights,
+        "llm_assessed": llm_assessed,
+        "llm_error": coherence_report.get("error", ""),
         "logical_progression": coherence_report.get("logical_progression", "unknown"),
         "paragraphing_quality": coherence_report.get("paragraphing_quality", "unknown"),
         "coherence_issues": coherence_report.get("coherence_issues", []),
@@ -137,7 +143,7 @@ def coherence_node(state: GraderState) -> dict:
 
     return {
         "cc_score": cc_score,
-        "cc_confidence": cc_confidence,
+        "cc_confidence": round(cc_confidence, 3),
         "cohesion_report": cohesion_report,
         "coherence_report": coherence_report,
         "cc_details": cc_details,
@@ -148,29 +154,31 @@ def _assess_coherence_with_llm(
     essay_text: str,
     cohesion_data: dict,
     paragraph_data: dict,
+    critic_feedback: str = "",
 ) -> dict:
     """
     Use Gemini LLM to assess qualitative coherence aspects.
-    Falls back to quantitative-only scoring if LLM is unavailable.
+
+    When the LLM is unavailable or its answer is unusable, the returned report
+    has ``coherence_score`` set to None so the caller scores on quantitative
+    evidence alone.
     """
-    if not settings.gemini_api_key:
-        return {
-            "coherence_score": 5.0,
-            "logical_progression": "unknown",
-            "paragraphing_quality": "unknown",
-            "coherence_issues": ["LLM unavailable — coherence not assessed"],
-            "coherence_strengths": [],
-            "reasoning": "Fallback: LLM API key not configured",
-        }
+    if not llm_available():
+        return _unassessed_report("Gemini API key is not configured")
+
+    review_note = ""
+    if critic_feedback:
+        review_note = (
+            "\n## RE-EXAMINATION REQUEST:\n"
+            "A quality reviewer questioned the previous coherence assessment: "
+            f"{critic_feedback}\n"
+            "Re-read the essay with this concern in mind. Confirm or revise the "
+            "assessment in either direction based on the essay itself.\n"
+        )
 
     try:
-        client = genai.Client(api_key=settings.gemini_api_key)
-
-        # Inject rubric descriptions and metrics into prompt
-        cc_rubric = get_all_descriptions("coherence_cohesion")
-
         prompt = CC_COHERENCE_PROMPT.format(
-            cc_rubric=cc_rubric,
+            cc_rubric=get_all_descriptions("coherence_cohesion"),
             essay_text=essay_text,
             cohesive_device_count=cohesion_data["cohesive_device_count"],
             device_variety_score=cohesion_data["device_variety_score"],
@@ -179,71 +187,37 @@ def _assess_coherence_with_llm(
             has_intro=paragraph_data["has_intro"],
             has_overview=paragraph_data["has_overview"],
             structure_score=paragraph_data["structure_score"],
+            review_note=review_note,
         )
-
-        response = None
-        for attempt in range(3):
-            try:
-                response = client.models.generate_content(
-                    model=settings.gemini_model_llm,
-                    contents=prompt,
-                    config=types.GenerateContentConfig(
-                        temperature=0.2,
-                        max_output_tokens=1024,
-                    ),
-                )
-                break
-            except Exception as exc:
-                is_transient = "503" in str(exc) or "429" in str(exc) or "UNAVAILABLE" in str(exc).upper()
-                if not is_transient or attempt == 2:
-                    raise
-                time.sleep(2 ** attempt)
-
-        if response is None:
-            raise ValueError("No response generated from Gemini")
-
-        return _parse_coherence_response(response.text)
-
-    except Exception as e:
-        return {
-            "coherence_score": 5.0,
-            "logical_progression": "unknown",
-            "paragraphing_quality": "unknown",
-            "coherence_issues": [f"LLM error: {str(e)}"],
-            "coherence_strengths": [],
-            "reasoning": f"Fallback due to error: {str(e)}",
-        }
+        return _validate_coherence_report(generate_json(prompt))
+    except Exception as exc:
+        return _unassessed_report(f"LLM error: {exc}")
 
 
-def _parse_coherence_response(raw_text: str) -> dict:
-    """Parse JSON response from the coherence LLM."""
-    import re
+def _validate_coherence_report(report: dict) -> dict:
+    """Normalise the LLM report, rejecting a missing or out-of-range score."""
+    score = report.get("coherence_score")
+    if isinstance(score, bool) or not isinstance(score, (int, float)) or not 0 <= score <= 9:
+        raise ValueError(f"invalid coherence_score: {score!r}")
 
-    text = raw_text.strip()
-    if text.startswith("```"):
-        text = re.sub(r"^```(?:json)?\s*\n?", "", text)
-        text = re.sub(r"\n?```\s*$", "", text)
+    report["coherence_score"] = round(float(score) * 2) / 2
+    for key in ("coherence_issues", "coherence_strengths"):
+        if not isinstance(report.get(key), list):
+            report[key] = []
+    return report
 
-    start = text.find("{")
-    end = text.rfind("}")
-    if start != -1 and end != -1:
-        text = text[start : end + 1]
 
-    try:
-        result = json.loads(text)
-        # Validate required fields
-        if "coherence_score" not in result:
-            result["coherence_score"] = 5.0
-        return result
-    except json.JSONDecodeError:
-        return {
-            "coherence_score": 5.0,
-            "logical_progression": "unknown",
-            "paragraphing_quality": "unknown",
-            "coherence_issues": ["Failed to parse LLM response"],
-            "coherence_strengths": [],
-            "reasoning": "JSON parse error",
-        }
+def _unassessed_report(reason: str) -> dict:
+    """Report used when no qualitative coherence assessment could be made."""
+    return {
+        "coherence_score": None,
+        "logical_progression": "unknown",
+        "paragraphing_quality": "unknown",
+        "coherence_issues": [],
+        "coherence_strengths": [],
+        "reasoning": "",
+        "error": reason,
+    }
 
 
 def _empty_result() -> dict:

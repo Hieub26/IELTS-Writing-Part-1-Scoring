@@ -2,24 +2,28 @@
 LangGraph Orchestration — Defines the Multi-Agent grading pipeline.
 
 Graph Architecture:
-  START → chart_analyzer → [chart_type_router] →
+  START → preprocess → chart_analyzer → [chart_error_router] →
     → parallel fan-out: [grounding, grammar_lexical, coherence] →
     → fan-in join → chief_examiner →
     → [correction_router]:
         needs_correction? → critic → [correction_target_router]:
-            → re-run targeted agent → chief_examiner (loop)
+            → re-run grounding or coherence → chief_examiner (loop)
         no correction → END
 
 Features:
-  - Conditional routing based on chart type
+  - Early exit when the chart cannot be read
   - Parallel execution of scoring agents (TA, GRA/LR, CC)
   - Self-correction loop with Critic/Reflection pattern
   - Maximum loop protection
+
+Every chart type follows the same path; map and process diagrams are handled
+by the chart analyzer describing changes/stages instead of numeric trends.
 """
 
 from __future__ import annotations
 
 from functools import lru_cache
+from typing import Callable
 
 from langgraph.graph import StateGraph, START, END
 
@@ -80,10 +84,10 @@ def route_after_chief(state: GraderState) -> str:
 def route_after_critic(state: GraderState) -> str:
     """Route after Critic — direct to the specific agent that needs re-examination."""
     target = state.get("correction_target", "none")
+    if not state.get("needs_correction", False):
+        return "end"
     if target == "grounding":
         return "re_grounding"
-    elif target == "grammar":
-        return "re_grammar"
     elif target == "coherence":
         return "re_coherence"
     else:
@@ -125,7 +129,7 @@ def build_grading_graph() -> StateGraph:
             → error_end (if chart failed)
             → parallel: grounding + grammar_lexical + coherence
                 → chief_examiner → [route]
-                    → critic → [route by target] → re-run agent → chief_examiner
+                    → critic → [route by target] → re-run grounding/coherence → chief_examiner
                     → END
     """
     builder = StateGraph(GraderState)
@@ -148,9 +152,9 @@ def build_grading_graph() -> StateGraph:
     builder.add_node("chief_examiner", chief_examiner_node)
     builder.add_node("critic", critic_node)
 
-    # Re-run nodes (same functions, different node names for graph clarity)
+    # Re-run nodes (same functions, different node names for graph clarity).
+    # Grammar/lexical analysis is deterministic, so it has no re-run node.
     builder.add_node("re_grounding", grounding_node)
-    builder.add_node("re_grammar", grammar_lexical_node)
     builder.add_node("re_coherence", coherence_node)
 
     # ═══════════════════════════════════════════
@@ -200,7 +204,6 @@ def build_grading_graph() -> StateGraph:
         route_after_critic,
         {
             "re_grounding": "re_grounding",
-            "re_grammar": "re_grammar",
             "re_coherence": "re_coherence",
             "end": END,
         },
@@ -208,7 +211,6 @@ def build_grading_graph() -> StateGraph:
 
     # Re-run agents feed back to Chief Examiner
     builder.add_edge("re_grounding", "chief_examiner")
-    builder.add_edge("re_grammar", "chief_examiner")
     builder.add_edge("re_coherence", "chief_examiner")
 
     return builder
@@ -225,29 +227,30 @@ def compile_graph():
 # Convenience Runner
 # ──────────────────────────────────────────────
 
-def grade_essay(image_path: str, essay_text: str) -> dict:
+def grade_essay(
+    image_path: str,
+    essay_text: str,
+    task_prompt: str = "",
+    on_node_complete: Callable[[str], None] | None = None,
+) -> dict:
     """
     Grade an IELTS Writing Task 1 essay.
 
     Args:
         image_path: Path to the chart/graph image.
         essay_text: The candidate's essay text.
+        task_prompt: Optional task statement printed with the chart.
+        on_node_complete: Called with a node's name each time it finishes,
+            so a UI can report real pipeline progress.
 
     Returns:
         Final GraderState with all scores, feedback, and evidence.
     """
-    from app.config import settings
-    from pathlib import Path
-    print(f"\n=== [DIAGNOSTIC] GRADING PIPELINE STARTING ===")
-    print(f"  Current Working Directory: {Path.cwd()}")
-    print(f"  Gemini API Key Loaded: {bool(settings.gemini_api_key)}")
-    if settings.gemini_api_key:
-        print(f"  Key prefix: {settings.gemini_api_key[:12]}...")
-        
     graph = compile_graph()
     initial_state = {
         "image_path": image_path,
         "essay_text": essay_text,
+        "task_prompt": task_prompt,
         "word_count": 0,
         "chart_type": "",
         "chart_data": {},
@@ -273,11 +276,18 @@ def grade_essay(image_path: str, essay_text: str) -> dict:
         "feedback": "",
         "band_breakdown": {},
         "evidence_summary": {},
+        "analysis_warnings": [],
         "correction_count": 0,
         "needs_correction": False,
         "correction_target": "none",
         "critic_feedback": "",
     }
 
-    result = graph.invoke(initial_state)
+    result = initial_state
+    for mode, chunk in graph.stream(initial_state, stream_mode=["updates", "values"]):
+        if mode == "values":
+            result = chunk
+        elif on_node_complete:
+            for node_name in chunk:
+                on_node_complete(node_name)
     return result
