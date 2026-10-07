@@ -8,20 +8,23 @@ When the Chief Examiner detects inconsistencies, the Critic Agent:
 
 This follows the LangGraph Critic/Reflection pattern instead of
 having the Chief directly re-invoke agents.
+
+Only the grounding (TA) and coherence (CC) agents can be re-examined: both
+take the Critic's feedback into an LLM review.  The grammar/lexical agent is
+fully deterministic, so re-running it could never change its result.
 """
 
 from __future__ import annotations
 
 import json
-import re
-import time
-
-from google import genai
-from google.genai import types
 
 from app.config import settings
 from app.core.state import GraderState
+from app.core.utils.llm import generate_json, llm_available
 from app.core.utils.prompt_templates import CRITIC_PROMPT
+
+
+RERUNNABLE_TARGETS = {"grounding", "coherence"}
 
 
 def critic_node(state: GraderState) -> dict:
@@ -46,13 +49,13 @@ def critic_node(state: GraderState) -> dict:
         }
 
     # If LLM is available, use it for nuanced analysis
-    if settings.gemini_api_key:
+    if llm_available():
         result = _critic_with_llm(state)
     else:
         result = _critic_rule_based(state)
 
-    # Increment correction count
-    result["correction_count"] = correction_count + 1
+    # Count only the loops that actually send an agent back for a re-run.
+    result["correction_count"] = correction_count + (1 if result["needs_correction"] else 0)
 
     return result
 
@@ -60,8 +63,6 @@ def critic_node(state: GraderState) -> dict:
 def _critic_with_llm(state: GraderState) -> dict:
     """Use LLM to analyze the inconsistency in detail."""
     try:
-        client = genai.Client(api_key=settings.gemini_api_key)
-
         ta_details = state.get("ta_details", {})
         sentence_metrics = state.get("sentence_metrics", {})
         lexical_metrics = state.get("lexical_metrics", {})
@@ -88,28 +89,7 @@ def _critic_with_llm(state: GraderState) -> dict:
             cc_confidence=state.get("cc_confidence", 0),
         )
 
-        response = None
-        for attempt in range(3):
-            try:
-                response = client.models.generate_content(
-                    model=settings.gemini_model_llm,
-                    contents=prompt,
-                    config=types.GenerateContentConfig(
-                        temperature=0.1,
-                        max_output_tokens=512,
-                    ),
-                )
-                break
-            except Exception as exc:
-                is_transient = "503" in str(exc) or "429" in str(exc) or "UNAVAILABLE" in str(exc).upper()
-                if not is_transient or attempt == 2:
-                    raise
-                time.sleep(2 ** attempt)
-
-        if response is None:
-            raise ValueError("No response generated from Gemini")
-
-        return _parse_critic_response(response.text)
+        return _interpret_critic_response(generate_json(prompt, temperature=0.1))
 
     except Exception:
         return _critic_rule_based(state)
@@ -123,8 +103,6 @@ def _critic_rule_based(state: GraderState) -> dict:
     cc_score = state.get("cc_score", 0)
 
     ta_conf = state.get("ta_confidence", 0)
-    gra_conf = state.get("gra_confidence", 0)
-    cc_conf = state.get("cc_confidence", 0)
 
     # Detect specific inconsistencies
     issues = []
@@ -135,24 +113,17 @@ def _critic_rule_based(state: GraderState) -> dict:
             "target": "grounding",
             "feedback": (
                 "GRA score is high ({:.1f}) but TA is very low ({:.1f}). "
-                "The grounding agent may be too strict in NLI classification. "
-                "Re-examine with lower contradiction threshold."
+                "Check whether accurate statements were missed or mislabelled "
+                "as contradictions, and whether the low coverage is genuine."
             ).format(gra_score, ta_score),
             "severity": "high",
         })
 
-    # Case 2: Low confidence on any agent
+    # Case 2: Low confidence on the grounding agent
     if ta_conf < settings.min_confidence_threshold:
         issues.append({
             "target": "grounding",
             "feedback": f"TA confidence is low ({ta_conf:.2f}). Re-examine NLI predictions.",
-            "severity": "medium",
-        })
-
-    if gra_conf < settings.min_confidence_threshold:
-        issues.append({
-            "target": "grammar",
-            "feedback": f"GRA confidence is low ({gra_conf:.2f}). Re-examine grammar analysis.",
             "severity": "medium",
         })
 
@@ -185,42 +156,23 @@ def _critic_rule_based(state: GraderState) -> dict:
     }
 
 
-def _parse_critic_response(raw_text: str) -> dict:
-    """Parse the Critic's JSON response."""
-    text = raw_text.strip()
-    if text.startswith("```"):
-        text = re.sub(r"^```(?:json)?\s*\n?", "", text)
-        text = re.sub(r"\n?```\s*$", "", text)
+def _interpret_critic_response(result: dict) -> dict:
+    """Turn the Critic's JSON verdict into state updates."""
+    target = str(result.get("correction_target") or "none").lower()
+    severity = str(result.get("severity") or "low").lower()
 
-    start = text.find("{")
-    end = text.rfind("}")
-    if start != -1 and end != -1:
-        text = text[start : end + 1]
-
-    try:
-        result = json.loads(text)
-        target = result.get("correction_target", "none")
-        severity = result.get("severity", "low")
-
-        if target == "none" or severity == "low":
-            return {
-                "needs_correction": False,
-                "correction_target": "none",
-                "critic_feedback": result.get("specific_issue", "No issues found"),
-            }
-
-        return {
-            "needs_correction": True,
-            "correction_target": target,
-            "critic_feedback": (
-                f"{result.get('specific_issue', '')} "
-                f"Focus: {result.get('suggested_focus', '')}"
-            ).strip(),
-        }
-
-    except json.JSONDecodeError:
+    if target not in RERUNNABLE_TARGETS or severity == "low":
         return {
             "needs_correction": False,
             "correction_target": "none",
-            "critic_feedback": "Failed to parse critic response",
+            "critic_feedback": result.get("specific_issue") or "No issues found",
         }
+
+    return {
+        "needs_correction": True,
+        "correction_target": target,
+        "critic_feedback": (
+            f"{result.get('specific_issue', '')} "
+            f"Focus: {result.get('suggested_focus', '')}"
+        ).strip(),
+    }

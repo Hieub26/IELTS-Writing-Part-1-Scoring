@@ -9,6 +9,9 @@ from pathlib import Path
 import tempfile
 import hashlib
 
+from app.config import settings
+from app.core.utils.linguistics import count_words
+
 
 def _persist_upload(uploaded_file) -> str:
     """Keep one temporary copy per session and remove a superseded upload."""
@@ -32,12 +35,13 @@ def _persist_upload(uploaded_file) -> str:
     return tmp.name
 
 
-def render_upload_section() -> tuple[str | None, str | None]:
+def render_upload_section() -> tuple[str | None, str | None, str]:
     """
     Render the upload section with chart image uploader and essay text area.
 
     Returns:
-        Tuple of (image_path, essay_text) or (None, None) if not ready.
+        Tuple of (image_path, essay_text, task_prompt); the first two are
+        None until the candidate has supplied them.
     """
     st.markdown("### 📤 Upload Your Work")
 
@@ -59,6 +63,17 @@ def render_upload_section() -> tuple[str | None, str | None]:
             # Show preview
             st.image(uploaded_file, caption="Uploaded Chart", use_container_width=True)
 
+        task_prompt = st.text_area(
+            "Task statement (optional)",
+            height=100,
+            placeholder=(
+                "The chart below shows ... Summarise the information by selecting "
+                "and reporting the main features, and make comparisons where relevant."
+            ),
+            help="The question text printed with the chart. It helps the system read the chart correctly.",
+            key="task_prompt_input",
+        )
+
     with col2:
         st.markdown("#### ✍️ Your Essay")
         essay_text = st.text_area(
@@ -73,10 +88,15 @@ def render_upload_section() -> tuple[str | None, str | None]:
         )
 
         if essay_text:
-            word_count = len(essay_text.split())
-            if word_count < 150:
-                st.warning(f"⚠️ Word count: **{word_count}** (below 150 minimum)")
+            # Same counter and minimum the pipeline uses for the TA penalty.
+            word_count = count_words(essay_text)
+            if word_count < settings.min_word_count:
+                st.warning(
+                    f"⚠️ Word count: **{word_count}** "
+                    f"(below {settings.min_word_count} minimum)"
+                )
             else:
                 st.success(f"✅ Word count: **{word_count}**")
 
-    return image_path, essay_text if essay_text and essay_text.strip() else None
+    essay = essay_text if essay_text and essay_text.strip() else None
+    return image_path, essay, (task_prompt or "").strip()

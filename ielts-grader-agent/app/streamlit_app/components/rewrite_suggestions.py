@@ -1,9 +1,12 @@
 """
 Possible Alternatives & Actionable Rewrites Component.
-Renders concrete sentence-level revision suggestions with confidence badges.
+Renders concrete sentence-level revision suggestions.
 """
 
 from __future__ import annotations
+
+import html
+
 import streamlit as st
 
 
@@ -18,11 +21,12 @@ def render_rewrite_suggestions(sentence_rewrites: list[dict]):
     st.caption("Contextual sentence-level revision suggestions to elevate your Band score.")
 
     for item in sentence_rewrites:
+        # These strings come from the candidate's essay and the grammar
+        # checker, so escape them before embedding in HTML.
         sent_num = item.get("sentence_idx", 1)
-        orig = item.get("original_phrase", "")
-        suggested = item.get("suggested_replacement", "")
-        conf = item.get("confidence", 0.90)
-        reason = item.get("reason", "Grammar & vocabulary enhancement")
+        orig = html.escape(str(item.get("original_phrase", "")))
+        suggested = html.escape(str(item.get("suggested_replacement", "")))
+        reason = html.escape(str(item.get("reason", "Grammar & vocabulary enhancement")))
         item_type = item.get("type", "vocabulary")
 
         type_badge = "🎨 Vocabulary Variety" if item_type == "vocabulary" else "📝 Grammar Accuracy"
@@ -35,9 +39,6 @@ def render_rewrite_suggestions(sentence_rewrites: list[dict]):
                 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem;">
                     <span style="font-weight: 600; font-size: 0.85rem; background: {badge_bg}; color: {badge_color}; padding: 0.2rem 0.6rem; border-radius: 4px;">
                         Sentence {sent_num} · {type_badge}
-                    </span>
-                    <span style="background: #1e293b; color: #38bdf8; font-weight: 600; font-size: 0.8rem; padding: 0.15rem 0.5rem; border-radius: 12px;">
-                        Confidence: {conf:.0%}
                     </span>
                 </div>
                 <div style="display: flex; gap: 0.8rem; align-items: center; background: #1e293b; padding: 0.6rem; border-radius: 6px; font-family: monospace;">

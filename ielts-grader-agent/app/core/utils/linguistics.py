@@ -261,6 +261,38 @@ def count_words(text: str) -> int:
 
 
 # ──────────────────────────────────────────────
+# Overview Detection
+# ──────────────────────────────────────────────
+
+OVERVIEW_MARKERS = (
+    "overall", "in general", "generally", "it is clear", "it can be seen",
+    "it can also be seen", "to summarize", "to summarise", "in summary",
+    "to sum up", "on the whole", "it is evident", "it is noticeable",
+    "the most striking", "the most notable", "at a glance", "at first glance",
+)
+
+# An overview opens its sentence with the marker ("Overall, ...") and then
+# states a main trend.  A marker buried mid-sentence ("the overall number of
+# cars") or a bare "Overall." is not an overview.
+_OVERVIEW_MARKER_MAX_OFFSET = 25
+_OVERVIEW_MIN_WORDS = 8
+
+
+def find_overview_sentence(text: str) -> str | None:
+    """Return the sentence that acts as the essay's overview, if there is one."""
+    for sentence in re.split(r"(?<=[.!?])\s+|\n+", text):
+        sentence = sentence.strip()
+        if len(sentence.split()) < _OVERVIEW_MIN_WORDS:
+            continue
+        opening = sentence[: _OVERVIEW_MARKER_MAX_OFFSET + 20].lower()
+        for marker in OVERVIEW_MARKERS:
+            position = opening.find(marker)
+            if 0 <= position <= _OVERVIEW_MARKER_MAX_OFFSET:
+                return sentence
+    return None
+
+
+# ──────────────────────────────────────────────
 # Lexical Metrics
 # ──────────────────────────────────────────────
 
@@ -367,16 +399,16 @@ def _count_trend_word_repetitions(text: str) -> dict:
         "level off": ["level off", "leveled off", "levelled off"],
     }
 
-    words = text.split()
     text_lower = text.lower()
 
     # Count how many times each trend group appears
     group_counts = {}
     used_groups = set()
     for group_name, variants in trend_groups.items():
-        count = 0
-        for variant in variants:
-            count += text_lower.count(variant)
+        # Whole-word matching: a plain substring count would count "increased"
+        # once for "increase" and again for "increased".
+        pattern = r"\b(?:" + "|".join(re.escape(v) for v in variants) + r")\b"
+        count = len(re.findall(pattern, text_lower))
         if count > 0:
             group_counts[group_name] = count
             used_groups.add(group_name)

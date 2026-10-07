@@ -49,6 +49,8 @@ def grammar_lexical_node(state: GraderState) -> dict:
     if not essay_text.strip():
         return _empty_result()
 
+    chart_terms, chart_text = _chart_vocabulary(state.get("chart_data") or {})
+
     # ═══════════════════════════════════════════
     # Part 1: Grammar & Spelling Analysis (GRA)
     # ═══════════════════════════════════════════
@@ -74,12 +76,15 @@ def grammar_lexical_node(state: GraderState) -> dict:
             continue
 
         matched_word = essay_text[match.offset : match.offset + match.error_length].strip()
-        matched_word_lower = matched_word.lower()
 
-        # Ignore false spelling/grammar errors for compound terms and placeholders
-        if any(w in matched_word_lower for w in (
-            "home school", "home tutor", "somecountry", "somecity", "town a", "town b"
-        )):
+        # Names and compound terms printed on the chart itself (e.g. a place
+        # name or "home schooled") are not the candidate's errors.
+        if _is_chart_term(
+            matched_word,
+            chart_terms,
+            chart_text,
+            is_spelling=match.rule_issue_type == "misspelling",
+        ):
             continue
 
         # Ignore dialect/style variants (American vs British English)
@@ -158,6 +163,9 @@ def grammar_lexical_node(state: GraderState) -> dict:
     # GRA confidence: higher when we have more sentences to analyze
     total_sents = sentence_metrics["total_sentences"]
     gra_confidence = min(0.95, 0.5 + (total_sents / 20))  # Max out at ~10 sentences
+    if language_tool_error:
+        # No error detection ran, so the error density behind GRA is unknown.
+        gra_confidence = min(gra_confidence, 0.3)
 
     # LR confidence: higher when word count is substantial
     lr_confidence = min(0.95, 0.5 + (word_count / 300))  # Max out at ~150 words
@@ -190,23 +198,22 @@ def _generate_sentence_rewrites(essay_text: str, grammar_errors: list[dict]) -> 
     
     # 1. Add trend phrase alternatives (Vocabulary Variety)
     trend_replacements = [
-        ("experienced a decline", "declined modestly", "Avoid template phrase; use strong action verb", 0.91),
-        ("witnessed an upward trend", "climbed steadily", "Avoid generic template phrase; use active descriptor", 0.93),
-        ("experienced a similar trend", "followed a similar trajectory", "Enhance lexical variety", 0.88),
-        ("witnessed a slow decline", "declined gradually", "Use precise adverbial descriptor", 0.90),
-        ("saw an increase", "rose markedly", "Use strong action verb", 0.89),
+        ("experienced a decline", "declined modestly", "Avoid template phrase; use strong action verb"),
+        ("witnessed an upward trend", "climbed steadily", "Avoid generic template phrase; use active descriptor"),
+        ("experienced a similar trend", "followed a similar trajectory", "Enhance lexical variety"),
+        ("witnessed a slow decline", "declined gradually", "Use precise adverbial descriptor"),
+        ("saw an increase", "rose markedly", "Use strong action verb"),
     ]
 
     sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", essay_text) if s.strip()]
     for sent_idx, sentence in enumerate(sentences):
         sent_lower = sentence.lower()
-        for orig, replacement, reason, conf in trend_replacements:
+        for orig, replacement, reason in trend_replacements:
             if orig in sent_lower:
                 rewrites.append({
                     "sentence_idx": sent_idx + 1,
                     "original_phrase": orig,
                     "suggested_replacement": replacement,
-                    "confidence": conf,
                     "reason": reason,
                     "type": "vocabulary",
                 })
@@ -223,12 +230,39 @@ def _generate_sentence_rewrites(essay_text: str, grammar_errors: list[dict]) -> 
                     "sentence_idx": _get_sentence_num_for_offset(essay_text, offset),
                     "original_phrase": orig_text,
                     "suggested_replacement": suggestions[0],
-                    "confidence": 0.95,
                     "reason": err.get("message", "Grammar correction"),
                     "type": "grammar",
                 })
 
     return rewrites[:6]  # Top 6 high-value suggestions
+
+
+def _chart_vocabulary(chart_data: dict) -> tuple[set[str], str]:
+    """Collect the words and the label text that appear on the chart."""
+    labels = [
+        chart_data.get("title"),
+        chart_data.get("x_axis"),
+        chart_data.get("y_axis"),
+        *(chart_data.get("categories") or []),
+    ]
+    chart_text = " ".join(str(label) for label in labels if label).lower()
+    return set(re.findall(r"[a-z]+", chart_text)), chart_text
+
+
+def _is_chart_term(
+    matched_text: str, chart_terms: set[str], chart_text: str, is_spelling: bool
+) -> bool:
+    """Return whether flagged text merely repeats wording from the chart."""
+    matched_lower = matched_text.lower()
+    words = re.findall(r"[a-z]+", matched_lower)
+    if not words or not chart_terms:
+        return False
+    # A multi-word flag (e.g. a hyphenation suggestion) must match the chart's
+    # own phrasing.  A single word is excused only from spelling checks, so a
+    # real grammar error on a word that happens to be on the chart still counts.
+    if len(words) > 1:
+        return matched_lower in chart_text
+    return is_spelling and words[0] in chart_terms
 
 
 def _get_sentence_num_for_offset(text: str, offset: int) -> int:
@@ -263,4 +297,5 @@ def _empty_result() -> dict:
         "grammar_errors": [],
         "lexical_metrics": {},
         "sentence_metrics": {},
+        "sentence_rewrites": [],
     }

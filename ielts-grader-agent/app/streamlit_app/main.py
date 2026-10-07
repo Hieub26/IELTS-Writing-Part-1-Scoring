@@ -81,7 +81,7 @@ st.markdown(
 # Upload Section
 # ══════════════════════════════════════════════
 
-image_path, essay_text = render_upload_section()
+image_path, essay_text, task_prompt = render_upload_section()
 
 # ══════════════════════════════════════════════
 # Grade Button
@@ -102,24 +102,54 @@ with col_btn[1]:
 # Grading Pipeline
 # ══════════════════════════════════════════════
 
+# Progress line shown when each pipeline node finishes.
+NODE_PROGRESS_LABELS = {
+    "chart_analyzer": "📊 **Agent 1**: Chart image analyzed (VLM)",
+    "grounding": "🔍 **Agent 2**: Essay content verified against the chart (NLI)",
+    "grammar_lexical": "📝 **Agent 3**: Grammar & vocabulary checked",
+    "coherence": "🔗 **Agent 4**: Coherence & cohesion evaluated",
+    "chief_examiner": "👨‍⚖️ **Agent 5**: Chief Examiner synthesis complete",
+    "critic": "🧐 **Critic**: Reviewed the assessment for inconsistencies",
+    "re_grounding": "🔁 **Agent 2**: Task Achievement re-examined",
+    "re_coherence": "🔁 **Agent 4**: Coherence re-examined",
+    "error_end": "❌ Chart analysis failed",
+}
+
 if grade_button and image_path and essay_text:
     st.markdown("---")
 
-    # Show loading animation
     with st.status("🤖 Multi-Agent Grading Pipeline Running...", expanded=True) as status:
-        st.write("📊 **Agent 1**: Analyzing chart image with VLM...")
-        st.write("🔍 **Agent 2**: Verifying essay content (NLI)...")
-        st.write("📝 **Agent 3**: Checking grammar & vocabulary...")
-        st.write("🔗 **Agent 4**: Evaluating coherence & cohesion...")
-        st.write("👨‍⚖️ **Agent 5**: Chief Examiner synthesizing...")
+
+        def report_progress(node_name: str) -> None:
+            label = NODE_PROGRESS_LABELS.get(node_name)
+            if label:
+                st.write(label)
 
         try:
-            result = grade_essay(image_path, essay_text)
+            result = grade_essay(
+                image_path,
+                essay_text,
+                task_prompt=task_prompt,
+                on_node_complete=report_progress,
+            )
             status.update(label="✅ Grading Complete!", state="complete")
         except Exception as e:
             status.update(label="❌ Grading Failed", state="error")
             st.error(f"An error occurred: {str(e)}")
             st.stop()
+
+    # Keep the graded essay with its result: Streamlit reruns this script on
+    # every widget interaction, which would otherwise discard the result.
+    st.session_state.grading = {"result": result, "essay_text": essay_text}
+
+grading = st.session_state.get("grading")
+
+if grading:
+    result = grading["result"]
+    graded_essay = grading["essay_text"]
+
+    if essay_text != graded_essay:
+        st.info("The essay has changed since this result was produced. Grade again to update it.")
 
     # ══════════════════════════════════════════════
     # Results Display
@@ -146,7 +176,7 @@ if grade_button and image_path and essay_text:
     st.markdown("---")
 
     render_highlighted_essay(
-        essay_text=essay_text,
+        essay_text=graded_essay,
         grammar_errors=result.get("grammar_errors", []),
         grounding_report=result.get("grounding_report", []),
     )
@@ -178,9 +208,14 @@ if grade_button and image_path and essay_text:
             st.markdown("#### Grounding Report")
             for item in result.get("grounding_report", []):
                 label = item.get("label", "neutral")
-                icon = {"entailment": "✅", "contradiction": "❌", "neutral": "➖"}.get(label, "➖")
+                icon = {
+                    "entailment": "✅", "partial": "🟡", "contradiction": "❌", "neutral": "➖",
+                }.get(label, "➖")
+                confidence = item.get("confidence")
+                # A label set by the LLM second opinion carries no probability.
+                basis = "LLM review" if confidence is None else f"{confidence:.0%}"
                 st.markdown(
-                    f"{icon} **{label.upper()}** ({item.get('confidence', 0):.0%}): "
+                    f"{icon} **{label.upper()}** ({basis}): "
                     f"*{item.get('trend', '')}*"
                 )
                 if item.get("matched_sentence"):

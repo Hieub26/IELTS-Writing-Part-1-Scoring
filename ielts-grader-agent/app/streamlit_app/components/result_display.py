@@ -4,6 +4,8 @@ Result Display Component — Shows scores, evidence, and detailed feedback.
 
 from __future__ import annotations
 
+import html
+
 import streamlit as st
 
 
@@ -37,6 +39,10 @@ def render_results(result: dict):
         '</div></div>'
     )
     st.markdown(overall_html, unsafe_allow_html=True)
+
+    # Never present a degraded analysis as a full assessment.
+    for warning in result.get("analysis_warnings", []):
+        st.warning(f"⚠️ {warning}")
 
     st.markdown("")  # Spacer
 
@@ -80,7 +86,9 @@ def render_results(result: dict):
     if evidence_summary:
         with st.expander("🔍 Evidence & Metrics", expanded=False):
             for criterion, evidence in evidence_summary.items():
-                label = criterion.replace("_evidence", "").upper()
+                # Evidence text is written by the LLM; escape before embedding.
+                label = html.escape(str(criterion).replace("_evidence", "").upper())
+                evidence = html.escape(str(evidence))
                 st.markdown(
                     f"""
                     <div class="evidence-item">

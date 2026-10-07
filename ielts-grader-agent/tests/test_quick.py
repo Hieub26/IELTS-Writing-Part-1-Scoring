@@ -44,7 +44,76 @@ def test_rubric_matching_returns_valid_bands():
         "complex_sentence_ratio": 0.7,
         "grammar_errors_per_100_words": 2.0,
         "sentence_variety_score": 0.6,
-    }) in {float(i) for i in range(1, 10)}
+    }) in {i / 2 for i in range(2, 19)}
+
+
+def test_rubric_awards_half_band_only_when_close_to_next_band():
+    def ta_band(coverage, has_overview=True):
+        return match_score_to_band("task_achievement", {
+            "coverage_rate": coverage,
+            "contradiction_rate": 0.0,
+            "has_overview": has_overview,
+        })
+
+    # Band 6 needs 0.60 coverage, Band 7 needs 0.75.
+    assert ta_band(0.60) == 6.0
+    assert ta_band(0.70) == 6.5
+    assert ta_band(0.75) == 7.0
+    # Nothing covered must not be rounded up from Band 1.
+    assert ta_band(0.0) == 1.0
+    # A missing overview is a hard requirement of Band 6, not a near miss.
+    assert ta_band(0.58, has_overview=False) == 5.0
+
+
+def test_overview_detection_requires_an_overview_sentence():
+    from app.core.utils.linguistics import find_overview_sentence
+
+    assert find_overview_sentence(
+        "The chart shows car sales. Overall, sales rose in every country over the period."
+    ).startswith("Overall")
+    # The word "overall" used as an adjective mid-sentence is not an overview.
+    assert find_overview_sentence(
+        "The chart shows that between 1990 and 2000 the overall number of cars sold was high."
+    ) is None
+    assert find_overview_sentence("Overall. Sales rose.") is None
+
+
+def test_grounding_asks_llm_for_overview_only_without_marker(monkeypatch):
+    from app.core.agents import grounding
+
+    sentences = [
+        "The table shows home schooling rates.",
+        "From the start, kindergarten pupils were home schooled the most and stayed highest.",
+    ]
+    essay = " ".join(sentences)
+
+    def unexpected(prompt, **kwargs):
+        raise AssertionError("LLM must not be called when a marker is present")
+
+    monkeypatch.setattr(grounding, "llm_available", lambda: True)
+    monkeypatch.setattr(grounding, "generate_json", unexpected)
+    marked = "Overall, kindergarten pupils were home schooled the most in every year."
+    assert grounding._find_overview(marked, [marked]) == (marked, "marker")
+
+    monkeypatch.setattr(
+        grounding, "generate_json", lambda prompt, **kwargs: {"overview_sentence_index": 1}
+    )
+    assert grounding._find_overview(essay, sentences) == (sentences[1], "llm")
+
+    # "No overview", an out-of-range index and an unavailable LLM all mean none.
+    for answer in ({"overview_sentence_index": -1}, {"overview_sentence_index": 9}, {}):
+        monkeypatch.setattr(grounding, "generate_json", lambda prompt, answer=answer, **kwargs: answer)
+        assert grounding._find_overview(essay, sentences) == (None, "none")
+
+    monkeypatch.setattr(grounding, "llm_available", lambda: False)
+    assert grounding._find_overview(essay, sentences) == (None, "none")
+
+
+def test_trend_word_repetition_counts_whole_words_once():
+    from app.core.utils.linguistics import _count_trend_word_repetitions
+
+    counts = _count_trend_word_repetitions("sales increased and then increased again")
+    assert counts["group_counts"]["increase"] == 2
 
 
 def test_grammar_agent_degrades_gracefully_without_languagetool(monkeypatch):
@@ -60,6 +129,22 @@ def test_grammar_agent_degrades_gracefully_without_languagetool(monkeypatch):
     })
     assert result["grammar_errors"] == []
     assert result["sentence_metrics"]["language_tool_error"] == "LanguageTool unavailable"
+    # With no error detection the GRA score must not be reported as reliable.
+    assert result["gra_confidence"] <= 0.3
+
+
+def test_grammar_agent_ignores_spelling_flags_on_chart_terms():
+    from app.core.agents.grammar_lexical import _chart_vocabulary, _is_chart_term
+
+    terms, text = _chart_vocabulary({
+        "title": "Home schooled students in SomeCountry",
+        "categories": ["Kindergarten", "Grades 1-2"],
+    })
+    assert _is_chart_term("SomeCountry", terms, text, is_spelling=True)
+    assert _is_chart_term("home schooled", terms, text, is_spelling=False)
+    # A grammar (not spelling) flag on a chart word is still a real error.
+    assert not _is_chart_term("students", terms, text, is_spelling=False)
+    assert not _is_chart_term("recieve", terms, text, is_spelling=True)
 
 
 def test_graph_compiles():
@@ -198,20 +283,8 @@ def test_grounding_generic_categories():
     ) is None
 
 
-def test_grounding_adaptive_thresholds_in_correction(monkeypatch):
-    from app.core.agents import grounding
-    from app.core.agents.grounding import grounding_node
-
-    class MockNLIModel:
-        def predict(self, pairs):
-            # logit scores corresponding to probs: [0.1, 0.4, 0.5]
-            # (entailment = 0.4)
-            return [[-2.3, -0.9, -0.7]] * len(pairs)
-
-    monkeypatch.setattr(grounding, "get_nli_model", lambda: MockNLIModel())
-
-    # Mock state
-    state = {
+def _iceland_state() -> dict:
+    return {
         "chart_data": {
             "categories": ["Iceland"],
             "key_trends": [
@@ -224,17 +297,118 @@ def test_grounding_adaptive_thresholds_in_correction(monkeypatch):
         "correction_target": "none"
     }
 
-    # Under strict/normal mode, entailment score 0.4 < 0.5 threshold, so it remains neutral
-    result_normal = grounding_node(state)
-    assert result_normal["grounding_report"][0]["label"] == "neutral"
 
-    # Under correction mode, entailment score 0.4 > 0.35 threshold, so it is classified as entailment
-    state_correction = state.copy()
-    state_correction["correction_count"] = 1
-    state_correction["correction_target"] = "grounding"
+class _BelowThresholdNLI:
+    def predict(self, pairs):
+        # logit scores corresponding to probs: [0.1, 0.4, 0.5]
+        # (entailment = 0.4, below the 0.5 threshold)
+        return [[-2.3, -0.9, -0.7]] * len(pairs)
 
-    result_correction = grounding_node(state_correction)
-    assert result_correction["grounding_report"][0]["label"] == "entailment"
+
+def test_grounding_correction_does_not_relax_thresholds(monkeypatch):
+    from app.core.agents import grounding
+
+    monkeypatch.setattr(grounding, "get_nli_model", lambda: _BelowThresholdNLI())
+    monkeypatch.setattr(grounding, "llm_available", lambda: False)
+
+    assert grounding.grounding_node(_iceland_state())["grounding_report"][0]["label"] == "neutral"
+
+    # A re-run without a reviewer must reproduce the first pass, not inflate it.
+    state = {**_iceland_state(), "correction_count": 1, "correction_target": "grounding"}
+    result = grounding.grounding_node(state)
+    assert result["grounding_report"][0]["label"] == "neutral"
+    assert result["ta_details"]["review"] == {"requested": True, "applied": False, "changed": 0}
+
+
+def test_grounding_correction_applies_evidence_backed_review(monkeypatch):
+    from app.core.agents import grounding
+
+    monkeypatch.setattr(grounding, "get_nli_model", lambda: _BelowThresholdNLI())
+    monkeypatch.setattr(grounding, "llm_available", lambda: True)
+    state = {
+        **_iceland_state(),
+        "essay_text": "Renewable energy in Iceland climbed from under half to roughly seventy percent.",
+        "correction_count": 1,
+        "correction_target": "grounding",
+        "critic_feedback": "Check whether paraphrased figures were missed.",
+    }
+
+    prompts = []
+
+    def cited_review(prompt, **kwargs):
+        prompts.append(prompt)
+        return {"reviews": [
+            {"trend_index": 0, "label": "entailment", "sentence_index": 0, "reason": "Paraphrased figures"}
+        ]}
+
+    monkeypatch.setattr(grounding, "generate_json", cited_review)
+    result = grounding.grounding_node(state)
+    report = result["grounding_report"][0]
+    assert report["label"] == "entailment"
+    assert report["source"] == "llm_review"
+    assert report["confidence"] is None
+    assert result["ta_details"]["review"]["changed"] == 1
+    assert "Check whether paraphrased figures were missed." in prompts[0]
+
+    # A new label that cites no essay sentence is rejected.
+    monkeypatch.setattr(grounding, "generate_json", lambda prompt, **kwargs: {"reviews": [
+        {"trend_index": 0, "label": "entailment", "sentence_index": 7, "reason": "No evidence"}
+    ]})
+    result = grounding.grounding_node(state)
+    assert result["grounding_report"][0]["label"] == "partial"
+    assert result["ta_details"]["review"]["changed"] == 0
+
+    # The reviewer can also lower a label.
+    monkeypatch.setattr(grounding, "generate_json", lambda prompt, **kwargs: {"reviews": [
+        {"trend_index": 0, "label": "neutral", "sentence_index": -1, "reason": "Not addressed"}
+    ]})
+    assert grounding.grounding_node(state)["grounding_report"][0]["label"] == "neutral"
+
+
+def test_coherence_scores_on_measured_cohesion_when_llm_unavailable(monkeypatch):
+    from app.core.agents import coherence
+
+    essay = _sample_essay()
+    monkeypatch.setattr(coherence, "llm_available", lambda: False)
+    unassessed = coherence.coherence_node({"essay_text": essay})
+
+    assert unassessed["cc_details"]["llm_assessed"] is False
+    assert unassessed["cc_details"]["qualitative_score"] is None
+    assert unassessed["cc_score"] == unassessed["cc_details"]["quantitative_score"]
+    assert unassessed["cc_confidence"] < 0.5
+
+    # An unusable LLM answer is treated the same way instead of becoming a 5.0.
+    monkeypatch.setattr(coherence, "llm_available", lambda: True)
+    monkeypatch.setattr(coherence, "generate_json", lambda prompt, **kwargs: {"coherence_score": "high"})
+    assert coherence.coherence_node({"essay_text": essay})["cc_details"]["llm_assessed"] is False
+
+    monkeypatch.setattr(coherence, "generate_json", lambda prompt, **kwargs: {
+        "coherence_score": 8.0, "logical_progression": "good", "paragraphing_quality": "good",
+    })
+    assessed = coherence.coherence_node({"essay_text": essay})
+    assert assessed["cc_details"]["llm_assessed"] is True
+    assert assessed["cc_details"]["blend_weights"] == {"quantitative": 0.6, "qualitative": 0.4}
+
+
+def test_critic_only_requests_reruns_that_can_change_the_result(monkeypatch):
+    from app.core.agents import critic
+
+    monkeypatch.setattr(critic, "llm_available", lambda: True)
+    monkeypatch.setattr(critic, "generate_json", lambda prompt, **kwargs: {
+        "correction_target": "grammar", "specific_issue": "GRA looks high", "severity": "high",
+    })
+    result = critic.critic_node({"correction_count": 0})
+    assert result["needs_correction"] is False
+    assert result["correction_count"] == 0
+
+    monkeypatch.setattr(critic, "generate_json", lambda prompt, **kwargs: {
+        "correction_target": "grounding", "specific_issue": "Coverage looks low",
+        "suggested_focus": "Check paraphrases", "severity": "high",
+    })
+    result = critic.critic_node({"correction_count": 0})
+    assert result["needs_correction"] is True
+    assert result["correction_target"] == "grounding"
+    assert result["correction_count"] == 1
 
 
 def test_chief_rejects_praise_when_ta_is_low():
@@ -266,6 +440,14 @@ def test_explainability_features():
     attr = _compute_score_attribution(state, breakdown)
     assert "TA" in attr and "GRA" in attr and "LR" in attr
     assert any(item["type"] == "positive" for item in attr["TA"])
+    # No cohesion evidence was supplied, so no CC strengths may be claimed.
+    assert attr["CC"] == []
+
+    state["cohesion_report"] = {
+        "cohesive_device_count": 1, "overused_devices": ["however"], "paragraph_count": 1,
+    }
+    cc_items = _compute_score_attribution(state, breakdown)["CC"]
+    assert cc_items and all(item["type"] == "negative" for item in cc_items)
 
     calib = _compute_confidence_calibration(state, 0.88)
     assert calib["grounding_nli"] == 0.90
@@ -276,5 +458,4 @@ def test_explainability_features():
     assert len(rewrites) > 0
     assert rewrites[0]["original_phrase"] == "experienced a decline"
     assert "declined modestly" in rewrites[0]["suggested_replacement"]
-
-
+    assert "confidence" not in rewrites[0]

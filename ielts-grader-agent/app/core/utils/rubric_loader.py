@@ -87,11 +87,40 @@ def get_all_descriptions(criterion: str) -> str:
     return "\n".join(lines)
 
 
+# criterion -> [(metric key, heuristic key, kind)].  "min": metric must reach
+# the threshold; "max": metric must not exceed it; "flag": a feature the band
+# requires to be present.
+_HEURISTIC_SPECS: dict[str, list[tuple[str, str, str]]] = {
+    "task_achievement": [
+        ("coverage_rate", "min_coverage_rate", "min"),
+        ("contradiction_rate", "max_contradiction_rate", "max"),
+        ("has_overview", "requires_overview", "flag"),
+    ],
+    "grammar_accuracy": [
+        ("complex_sentence_ratio", "min_complex_sentence_ratio", "min"),
+        ("grammar_errors_per_100_words", "max_grammar_errors_per_100_words", "max"),
+        ("sentence_variety_score", "min_sentence_variety_score", "min"),
+    ],
+    "lexical_resource": [
+        ("ttr", "min_ttr", "min"),
+        ("academic_word_density", "min_academic_word_density", "min"),
+        ("spelling_errors", "max_spelling_errors", "max"),
+        ("trend_word_repetition", "max_trend_word_repetition", "max"),
+    ],
+    "coherence_cohesion": [
+        ("cohesive_device_count", "min_cohesive_devices", "min"),
+        ("repeated_connectors", "max_repeated_connectors", "max"),
+        ("paragraph_count", "min_paragraph_count", "min"),
+    ],
+}
+
+
 def match_score_to_band(criterion: str, metrics: dict) -> float:
     """
     Match computed metrics against rubric heuristics to determine band score.
     Uses a top-down approach: starts from Band 9 and finds the highest band
-    whose heuristics the metrics satisfy.
+    whose heuristics the metrics satisfy.  A half band is awarded when the
+    metrics are also at least halfway to every threshold of the next band.
 
     Args:
         criterion: Rubric criterion name
@@ -103,16 +132,29 @@ def match_score_to_band(criterion: str, metrics: dict) -> float:
     rubric = load_rubric(criterion)
 
     for band in range(9, 0, -1):
-        band_key = str(band)
-        if band_key not in rubric:
-            continue
-        heuristics = rubric[band_key].get("heuristics", {})
+        heuristics = _band_heuristics(rubric, band)
         if not heuristics:
             continue
         if _metrics_satisfy_heuristics(criterion, metrics, heuristics):
+            next_heuristics = _band_heuristics(rubric, band + 1)
+            if next_heuristics and _is_halfway_to_next_band(
+                criterion, metrics, heuristics, next_heuristics
+            ):
+                return band + 0.5
             return float(band)
 
     return 1.0  # Fallback to Band 1
+
+
+def _band_heuristics(rubric: dict, band: int) -> dict:
+    return rubric.get(str(band), {}).get("heuristics", {})
+
+
+def _metric_value(metrics: dict, metric_key: str, kind: str) -> float:
+    """Read a metric, treating a missing one as the worst possible value."""
+    if kind == "flag":
+        return bool(metrics.get(metric_key, False))
+    return metrics.get(metric_key, 0 if kind == "min" else float("inf"))
 
 
 def _metrics_satisfy_heuristics(
@@ -122,63 +164,43 @@ def _metrics_satisfy_heuristics(
     Check if computed metrics satisfy the heuristics for a band level.
     Each criterion has different heuristic keys.
     """
-    if criterion == "task_achievement":
-        coverage = metrics.get("coverage_rate", 0)
-        contradiction = metrics.get("contradiction_rate", 1)
-        has_overview = metrics.get("has_overview", False)
-        min_cov = heuristics.get("min_coverage_rate", 0)
-        max_con = heuristics.get("max_contradiction_rate", 1)
-        req_overview = heuristics.get("requires_overview", False)
+    for metric_key, heuristic_key, kind in _HEURISTIC_SPECS.get(criterion, []):
+        if heuristic_key not in heuristics:
+            continue
+        threshold = heuristics[heuristic_key]
+        value = _metric_value(metrics, metric_key, kind)
+        if kind == "min" and value < threshold:
+            return False
+        if kind == "max" and value > threshold:
+            return False
+        if kind == "flag" and threshold and not value:
+            return False
+    return True
 
-        if coverage < min_cov:
-            return False
-        if contradiction > max_con:
-            return False
-        if req_overview and not has_overview:
-            return False
-        return True
 
-    elif criterion == "grammar_accuracy":
-        csr = metrics.get("complex_sentence_ratio", 0)
-        errors_per_100 = metrics.get("grammar_errors_per_100_words", 100)
-        variety = metrics.get("sentence_variety_score", 0)
+def _is_halfway_to_next_band(
+    criterion: str, metrics: dict, heuristics: dict, next_heuristics: dict
+) -> bool:
+    """
+    Return whether metrics that satisfy one band sit in the upper half of the
+    gap to the next band on every condition they still miss.  A missing
+    required feature (e.g. no overview) can never earn the half band.
+    """
+    for metric_key, heuristic_key, kind in _HEURISTIC_SPECS.get(criterion, []):
+        if heuristic_key not in next_heuristics:
+            continue
+        target = next_heuristics[heuristic_key]
+        value = _metric_value(metrics, metric_key, kind)
 
-        if csr < heuristics.get("min_complex_sentence_ratio", 0):
-            return False
-        if errors_per_100 > heuristics.get("max_grammar_errors_per_100_words", 100):
-            return False
-        if variety < heuristics.get("min_sentence_variety_score", 0):
-            return False
-        return True
+        if kind == "flag":
+            if target and not value:
+                return False
+            continue
 
-    elif criterion == "lexical_resource":
-        ttr = metrics.get("ttr", 0)
-        awd = metrics.get("academic_word_density", 0)
-        spelling = metrics.get("spelling_errors", 100)
-        trend_rep = metrics.get("trend_word_repetition", 100)
-
-        if ttr < heuristics.get("min_ttr", 0):
+        current = heuristics.get(heuristic_key, target)
+        midpoint = (current + target) / 2
+        if kind == "min" and value < target and value < midpoint:
             return False
-        if awd < heuristics.get("min_academic_word_density", 0):
+        if kind == "max" and value > target and value > midpoint:
             return False
-        if spelling > heuristics.get("max_spelling_errors", 100):
-            return False
-        if trend_rep > heuristics.get("max_trend_word_repetition", 100):
-            return False
-        return True
-
-    elif criterion == "coherence_cohesion":
-        devices = metrics.get("cohesive_device_count", 0)
-        repeated = metrics.get("repeated_connectors", 100)
-        para_count = metrics.get("paragraph_count", 0)
-
-        if devices < heuristics.get("min_cohesive_devices", 0):
-            return False
-        if repeated > heuristics.get("max_repeated_connectors", 100):
-            return False
-        if para_count < heuristics.get("min_paragraph_count", 0):
-            return False
-        return True
-
-    # Unknown criterion — accept by default
     return True
